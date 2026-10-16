@@ -1,0 +1,19 @@
+[project]
+name = "harborline-claims-desk"
+version = "1.0.0"
+description = "Insurance claims SOP harness: strict gates, flexible phrasing, memory across phases"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "httpx>=0.27",
+    "pydantic>=2.6",
+    "python-dotenv>=1.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

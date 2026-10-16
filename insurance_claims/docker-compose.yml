@@ -1,0 +1,20 @@
+services:
+  claims-desk:
+    build: .
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    environment:
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      MAX_VERIFY_ATTEMPTS: ${MAX_VERIFY_ATTEMPTS:-3}
+      MAX_OFF_TOPIC: ${MAX_OFF_TOPIC:-3}
+      MAX_FRUSTRATION_TURNS: ${MAX_FRUSTRATION_TURNS:-3}
+      TRACE_ENABLED: ${TRACE_ENABLED:-true}
+      DATA_DIR: /srv/data
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./data:/srv/data

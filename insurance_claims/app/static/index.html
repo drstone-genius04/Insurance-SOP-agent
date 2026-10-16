@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Harborline Mutual — Claims Desk</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,520;9..144,680&family=Outfit:wght@380;520;650&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="desk">
+    <header class="mast">
+      <div class="brand">
+        <span class="monogram" aria-hidden="true">HL</span>
+        <div>
+          <p class="eyebrow">Harborline Mutual</p>
+          <h1>Claims desk</h1>
+        </div>
+      </div>
+      <div class="mast-actions">
+        <p id="health" class="health">Checking the line…</p>
+        <label class="scenario">
+          Consent script
+          <select id="scenario" aria-label="Consent script for the next call">
+            <option value="default">Approves on the next turn</option>
+            <option value="timeout">Consent times out</option>
+          </select>
+        </label>
+        <button id="new-call" class="ghost" type="button">New call</button>
+      </div>
+    </header>
+
+    <ol id="journey" class="journey" aria-label="SOP phases"></ol>
+
+    <div class="folder">
+      <div class="tab">Open call</div>
+      <section class="pad" aria-label="Conversation">
+        <div id="log" class="log" aria-live="polite"></div>
+        <form id="composer" class="composer">
+          <label class="sr" for="draft">Message</label>
+          <textarea id="draft" rows="2" placeholder="Write the way you would talk. Enter sends."></textarea>
+          <button id="send" class="send" type="submit">Send</button>
+        </form>
+        <div class="scripts" aria-label="Sample calls">
+          <span>Sample calls</span>
+          <button type="button" data-script="demo">Margaret’s denial</button>
+          <button type="button" data-script="angry">Frustrated caller</button>
+          <button type="button" data-script="scope">Out of scope</button>
+          <button type="button" data-script="rep">Representative</button>
+        </div>
+      </section>
+      <aside class="ticket" aria-label="Call ticket">
+        <p class="ticket-kicker">Call ticket</p>
+        <h2 id="phase-label">Verify identity</h2>
+        <p id="freedom" class="freedom">Strict gate</p>
+        <section>
+          <h3>Identity <span id="factor-count"></span></h3>
+          <ul id="seals" class="seals"></ul>
+          <p id="who" class="who"></p>
+        </section>
+        <section>
+          <h3>Held from the call</h3>
+          <div id="pins" class="pins"></div>
+        </section>
+        <section>
+          <h3>File</h3>
+          <p id="file" class="file">Sealed until identity is confirmed.</p>
+        </section>
+        <section>
+          <h3>Letter tray</h3>
+          <div id="letters" class="letters"></div>
+        </section>
+        <details id="trace" class="trace">
+          <summary>How this turn was decided</summary>
+          <ol id="decisions"></ol>
+        </details>
+      </aside>
+    </div>
+    <p id="banner" class="banner" hidden></p>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

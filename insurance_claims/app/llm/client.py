@@ -1,0 +1,142 @@
+"""OpenAI-compatible and Anthropic chat clients."""
+
+from __future__ import annotations
+
+import json
+import re
+from typing import Any
+
+import httpx
+
+from app.config import Settings
+from app.llm.base import LLMError, NullLLM
+
+_FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
+
+
+def build_client(settings: Settings) -> Any:
+    """Return a live client when a key is set, otherwise a null client."""
+    if not settings.llm_configured:
+        return NullLLM()
+    return ChatClient(settings)
+
+
+class ChatClient:
+    """Small HTTP client. JSON mode is retried without the response_format flag."""
+
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+        self._http = httpx.Client(timeout=httpx.Timeout(45.0, connect=10.0))
+
+    def complete_json(self, system: str, user: str, temperature: float = 0.0) -> dict:
+        text = self._complete(system, user, temperature, json_mode=True)
+        return _parse_json(text)
+
+    def complete_text(self, system: str, user: str, temperature: float = 0.4) -> str:
+        return self._complete(system, user, temperature, json_mode=False).strip()
+
+    def _complete(self, system: str, user: str, temperature: float, json_mode: bool) -> str:
+        if self._settings.llm_provider == "anthropic":
+            return self._anthropic(system, user, temperature)
+        try:
+            return self._openai(system, user, temperature, json_mode)
+        except LLMError as exc:
+            if json_mode and exc.status == 400:
+                return self._openai(system, user, temperature, False)
+            raise
+
+    def _openai(self, system: str, user: str, temperature: float, json_mode: bool) -> str:
+        url = self._settings.llm_base_url.rstrip("/") + "/chat/completions"
+        payload: dict[str, Any] = {
+            "model": self._settings.llm_model,
+            "temperature": temperature,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        response = self._post(
+            url,
+            payload,
+            {"Authorization": f"Bearer {self._settings.llm_api_key}"},
+        )
+        try:
+            return str(response["choices"][0]["message"]["content"] or "")
+        except (KeyError, IndexError, TypeError) as exc:
+            raise LLMError("The model response did not include assistant text.") from exc
+
+    def _anthropic(self, system: str, user: str, temperature: float) -> str:
+        base = self._settings.llm_base_url.rstrip("/")
+        url = base + "/v1/messages"
+        payload = {
+            "model": self._settings.llm_model,
+            "max_tokens": 900,
+            "temperature": temperature,
+            "system": system,
+            "messages": [{"role": "user", "content": user}],
+        }
+        response = self._post(
+            url,
+            payload,
+            {
+                "x-api-key": self._settings.llm_api_key,
+                "anthropic-version": "2023-06-01",
+            },
+        )
+        try:
+            blocks = response["content"]
+            return "".join(str(block.get("text", "")) for block in blocks if isinstance(block, dict))
+        except (KeyError, TypeError) as exc:
+            raise LLMError("The model response did not include assistant text.") from exc
+
+    def _post(self, url: str, payload: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
+        last: LLMError | None = None
+        for attempt in range(2):
+            try:
+                response = self._http.post(url, json=payload, headers=headers)
+            except httpx.HTTPError as exc:
+                last = LLMError(f"Could not reach the model host: {exc}")
+                if attempt == 0:
+                    continue
+                raise last from exc
+            if response.status_code in {429, 500, 502, 503} and attempt == 0:
+                last = LLMError("The model host was busy.", status=response.status_code)
+                continue
+            if response.status_code >= 400:
+                config = response.status_code in {401, 403, 404}
+                raise LLMError(
+                    f"Model host returned HTTP {response.status_code}.",
+                    status=response.status_code,
+                    config=config,
+                )
+            try:
+                body = response.json()
+            except json.JSONDecodeError as exc:
+                raise LLMError("The model host returned invalid JSON.") from exc
+            if not isinstance(body, dict):
+                raise LLMError("The model host returned an unexpected payload.")
+            return body
+        raise last or LLMError("The model call failed.")
+
+
+def _parse_json(text: str) -> dict:
+    raw = text.strip()
+    fenced = _FENCE.search(raw)
+    if fenced:
+        raw = fenced.group(1).strip()
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start < 0 or end <= start:
+            raise LLMError("The extractor did not return JSON.")
+        try:
+            data = json.loads(raw[start : end + 1])
+        except json.JSONDecodeError as exc:
+            raise LLMError("The extractor did not return JSON.") from exc
+    if not isinstance(data, dict):
+        raise LLMError("The extractor JSON was not an object.")
+    return data
