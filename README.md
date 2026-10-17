@@ -84,7 +84,7 @@ Sessions use SQLite under `DATA_DIR`. On free Render that disk is ephemeral unle
 
 Before a reply reaches the caller, an output guard blocks claim leaks and false “you're verified” lines, requires a mismatch statement and human offer when those flags are set, checks remaining-factor counts, and rejects invented case ids after verification. A hard violation regenerates once, then falls back to the templated reply.
 
-Sample-call buttons match the reference harness walkthroughs:
+Sample calls, including the frustrated caller who demands the denial before verifying, are walked through in [docs/walkthroughs.md](docs/walkthroughs.md). The workflow diagram is in [docs/design.md](docs/design.md).
 
 | Button | What to expect |
 | --- | --- |
@@ -169,6 +169,7 @@ app/
     directives.py      Shared directive builders
     phases/            VERIFY_ID, RESOLVE_INTENT, PROCESS_CASE, POST_PROCESS
     parse.py           Deterministic field reading
+    firewall.py        Seal claim facts before the model speaks
     guard.py           Output guard
     phrases.py         Templated fallbacks
   eval/                Shared offline + live scenario definitions
@@ -177,5 +178,13 @@ app/
 fixtures/              Policyholders, claims, guidelines, representatives, consent
 scripts/live_demo.py   Live PASS/FAIL runner (needs a running server + key)
 tests/                 Offline suite (FakeLLM / NullLLM, no network)
+docs/                  design, walkthroughs, behaviour-spec, transcripts
 docker/                Entrypoint that keeps the data directory writable
 ```
+
+## Documentation
+
+- [docs/design.md](docs/design.md) — phases, the workflow diagram, firewall, identity, memory, emotion, consent.
+- [docs/walkthroughs.md](docs/walkthroughs.md) — how to run the demo, including the frustrated caller.
+- [docs/behaviour-spec.md](docs/behaviour-spec.md) — each rule, the code that enforces it, and the test that pins it.
+- [docs/transcripts.md](docs/transcripts.md) — expected calls, phase by phase.
