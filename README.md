@@ -6,9 +6,9 @@ Paste your own provider API key on the left panel, then try the sample calls. Th
 
 A claims-support agent that follows a fixed procedure and still talks like a person.
 
-Python decides the phase, the identity gate, which claim is open, and whether an email can be sent. The model only does two narrow jobs: read messy language into fields, and phrase the reply from facts the controller already chose. With no server key and no visitor key, the desk answers with a fixed “language model is not configured” notice and does not advance the call — same idea as the reference harness. Paste a key in the left panel (or set `LLM_API_KEY`) to run the procedure. If the model fails a safety check, the reply falls back to a phase template.
+Python decides the phase, the identity gate, which claim is open, and whether an email can be sent. The model only does two narrow jobs: read messy language into fields, and phrase the reply from facts the controller already chose. With no server key and no visitor key, the desk answers with a fixed “language model is not configured” notice and does not advance the call. Paste a key in the left panel (or set `LLM_API_KEY`) to run the procedure. If the model fails a safety check, the reply falls back to a phase template.
 
-The SOP is split like the reference harness: `app/sop/engine.py` (turn loop), `app/sop/phases/` (verify, resolve, process, email), `app/sop/directives.py` (shared directive builders), plus parsers and the output guard. Offline tests include a shared scenario suite (`app/eval/scenarios.py`); the same scenarios drive `scripts/live_demo.py` against a running server.
+The reference harness shows the model the whole claim file and checks the reply afterwards. This desk seals the directive first: before verification the prompt has no claim fields, and after verification only the fields for the current path (payment figures only when the caller asked about status or amount). The extractor cannot widen a turn onto those figures.
 
 ## Phases
 

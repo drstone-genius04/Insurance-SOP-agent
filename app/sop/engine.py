@@ -18,6 +18,7 @@ from app.config import Settings
 from app.llm.base import LLMClient, LLMError
 from app.sop import phrases
 from app.sop.directives import FREEDOM, NEGATIVE, ask, ensure_offer, handoff, handoff_directive
+from app.sop.firewall import seal
 from app.sop.guard import needs_regen, review
 from app.sop.parse import Parsed, parse_message
 from app.sop.phases import run_phases
@@ -186,6 +187,9 @@ class Harness:
         drafted = ""
         temperature = 0.2 if directive.get("freedom") == "strict" else 0.5
         history = _history(session["transcript"][:-1], 8)
+        sealed = seal(directive, bool(session["verified"]))
+        if sealed:
+            session.setdefault("turn_flags", {})["sealed"] = sealed
         visible = {
             "phase": directive["phase"],
             "freedom": directive["freedom"],
@@ -307,7 +311,7 @@ def _merge_model(parsed: Parsed, model: dict[str, Any], phase: str, text: str = 
         if isinstance(hint, str) and hint and hint not in parsed.intent_hints:
             parsed.intent_hints.append(hint)
     path = str(model.get("intent_path") or "")
-    if not parsed.intent_path and path in _ALLOWED_PATH:
+    if not parsed.intent_path and path in _ALLOWED_PATH and _path_allowed(path, text):
         parsed.intent_path = path
     emotion = str(model.get("emotion") or "")
     if parsed.emotion == "neutral" and emotion in _ALLOWED_EMOTION and phase not in {"POST_PROCESS", "CLOSED"}:
@@ -322,6 +326,17 @@ def _merge_model(parsed: Parsed, model: dict[str, Any], phase: str, text: str = 
             parsed.representative_name = parsed.representative_name or _clean(model.get("representative_name"))
             parsed.on_behalf_of_name = parsed.on_behalf_of_name or _clean(model.get("on_behalf_of_name"))
             parsed.relationship = parsed.relationship or _clean(model.get("relationship"))
+
+
+def _path_allowed(path: str, text: str) -> bool:
+    """The extractor must not widen a turn onto dollar amounts the caller did not ask about.
+
+    Status inquiries are the only path that includes payment figures. A model that labels
+    every turn ``status_inquiry`` would pull those figures into the prompt.
+    """
+    if path != "status_inquiry":
+        return True
+    return bool(re.search(r"\b(status|paid|payment|amount|reimburse|how much|balance)\b", text, re.I))
 
 
 def _said_this_turn(field: str, value: str, text: str) -> bool:
