@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -9,7 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from app.config import Settings, caller_settings, load_settings, provider_catalog
+from app.config import PROVIDER_PRESETS, Settings, caller_settings, load_settings, provider_catalog
 from app.llm.base import LLMClient, LLMError
 from app.llm.client import build_client
 from app.sop.engine import Harness
@@ -55,6 +56,25 @@ def _scrub_secret(value: object, secret: str) -> object:
     return value
 
 
+def _pick_model(models: list[str], provider: str) -> str:
+    """Prefer the provider default when the key has it, otherwise the first listed chat model."""
+    preset = PROVIDER_PRESETS.get(provider, {}).get("model", "")
+    return preset if preset in models else models[0]
+
+
+def _check_failure(exc: LLMError, secret: str, provider: str, model: str, models: list[str]) -> dict:
+    detail = str(exc).replace(secret, "[key]") if secret else str(exc)
+    if exc.status == 401:
+        detail = "That key was rejected (HTTP 401). Check the key and that the provider matches it."
+    elif exc.status == 403:
+        detail = f"This key is not allowed to use {model} (HTTP 403). Pick another model."
+    elif exc.status == 404:
+        detail = f"{model} is not available on {provider} (HTTP 404). Pick a model from the list."
+    elif exc.status == 429:
+        detail = "The provider is rate-limiting this key (HTTP 429). Wait a moment and try again."
+    return {"ok": False, "error": detail, "status": exc.status, "provider": provider, "model": model, "models": models}
+
+
 def create_app(settings: Settings | None = None, llm: LLMClient | None = None) -> FastAPI:
     """Build the app. Tests pass their own settings and a fake model."""
     settings = settings or load_settings()
@@ -97,34 +117,36 @@ def create_app(settings: Settings | None = None, llm: LLMClient | None = None) -
         )
         if override is None:
             return {"ok": False, "error": "Paste an API key first."}
+        secret = body.llm_api_key.strip()
+        requested = override.llm_model
+        models: list[str] = []
+        lister = build_client(override)
+        try:
+            models = lister.list_models()
+        except LLMError as exc:
+            if exc.status == 401:
+                return _check_failure(exc, secret, override.llm_provider, requested, models)
+            # Some hosts do not expose /models. Fall through and probe the model directly.
+        finally:
+            lister.close()
+        chosen = requested
+        if models and requested not in models:
+            chosen = _pick_model(models, override.llm_provider)
+            override = replace(override, llm_model=chosen)
         probe = build_client(override)
         try:
             probe.complete_text("Reply with exactly: ok", "Say ok.", temperature=0.0)
         except LLMError as exc:
-            detail = str(exc)
-            if body.llm_api_key.strip() in detail:
-                detail = detail.replace(body.llm_api_key.strip(), "[key]")
-            if exc.config:
-                if exc.status == 401:
-                    detail = "That key was rejected (HTTP 401). Check the key and provider."
-                elif exc.status == 403:
-                    detail = "That key is not allowed for this model (HTTP 403)."
-                elif exc.status == 404:
-                    detail = "That model name was not found (HTTP 404). Pick another model."
-            return {
-                "ok": False,
-                "error": detail,
-                "status": exc.status,
-                "provider": override.llm_provider,
-                "model": override.llm_model,
-            }
+            return _check_failure(exc, secret, override.llm_provider, chosen, models)
         finally:
-            if hasattr(probe, "close"):
-                probe.close()
+            probe.close()
         return {
             "ok": True,
             "provider": override.llm_provider,
-            "model": override.llm_model,
+            "model": chosen,
+            "requested_model": requested,
+            "switched": chosen != requested,
+            "models": models,
             "host": override.llm_host,
         }
 

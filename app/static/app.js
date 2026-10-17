@@ -37,9 +37,13 @@ const modelInput = document.querySelector("#llm-model");
 const keyInput = document.querySelector("#llm-key");
 const useKeyButton = document.querySelector("#use-key");
 
+const modelList = document.querySelector("#llm-models");
+let keyNote = "";
+
 providerSelect.addEventListener("change", () => {
   const chosen = providers.find((item) => item.id === providerSelect.value);
   if (chosen) modelInput.value = chosen.model;
+  fillModels([]);
   markUnchecked();
 });
 modelInput.addEventListener("input", markUnchecked);
@@ -81,8 +85,18 @@ function fingerprint() {
   return `${providerSelect.value}|${modelInput.value.trim()}|${keyInput.value.trim()}`;
 }
 
+function fillModels(models) {
+  modelList.replaceChildren();
+  models.forEach((id) => {
+    const option = document.createElement("option");
+    option.value = id;
+    modelList.append(option);
+  });
+}
+
 function markUnchecked() {
   saveKey();
+  keyNote = "";
   const key = keyInput.value.trim();
   if (!key) {
     keyState = "empty";
@@ -126,7 +140,7 @@ function paintHealth() {
     return;
   }
   if (keyState === "ready") {
-    node.textContent = `Ready. This tab will use ${modelLabel}.`;
+    node.textContent = `${keyNote ? `${keyNote} ` : ""}Ready. This tab will use ${modelLabel}.`;
     return;
   }
   node.textContent = "Key entered. Click Use this key to confirm it works.";
@@ -151,13 +165,22 @@ async function checkKey() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(callerBody()),
     }).then(readJson);
+    fillModels(result.models || []);
     if (result.ok) {
+      keyNote = result.switched
+        ? `${result.requested_model || "That model"} isn't available for this key, so I switched to ${result.model}.`
+        : "";
+      if (result.model) modelInput.value = result.model;
+      saveKey();
       keyState = "ready";
       keyError = "";
       lastChecked = fingerprint();
     } else {
       keyState = "error";
-      keyError = result.error || "That key did not work.";
+      const hint = (result.models || []).length
+        ? " Click the Model field to choose one your key can use."
+        : "";
+      keyError = `${result.error || "That key did not work."}${hint}`;
       lastChecked = fingerprint();
     }
   } catch (error) {

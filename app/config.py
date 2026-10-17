@@ -53,7 +53,7 @@ PROVIDER_PRESETS: dict[str, dict[str, str]] = {
         "base_url": "http://host.docker.internal:11434/v1",
     },
     "groq": {
-        "model": "llama-3.3-70b-versatile",
+        "model": "openai/gpt-oss-120b",
         "base_url": "https://api.groq.com/openai/v1",
     },
     "together": {

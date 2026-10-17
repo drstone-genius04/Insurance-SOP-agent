@@ -13,6 +13,11 @@ from app.llm.base import LLMError, NullLLM
 
 _FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 JSON_ONLY = "Return one JSON object and nothing else. No markdown fences."
+_NON_CHAT = re.compile(
+    r"whisper|tts|embed|guard|moderation|dall-e|image|audio|transcri|realtime|"
+    r"orpheus|playai|distil|rerank|search|computer-use|vision-only",
+    re.IGNORECASE,
+)
 
 
 def build_client(settings: Settings) -> Any:
@@ -41,6 +46,35 @@ class ChatClient:
         """Close the HTTP client. Visitor-key clients are one request long."""
         self._http.close()
 
+    def list_models(self) -> list[str]:
+        """Chat model ids this key can use, from the provider's own /models endpoint."""
+        base = self._settings.llm_base_url.rstrip("/")
+        if self._settings.llm_transport == "anthropic":
+            url = base + ("/models" if base.endswith("/v1") else "/v1/models")
+            headers = {"x-api-key": self._settings.llm_api_key, "anthropic-version": "2023-06-01"}
+        else:
+            url = base + "/models"
+            headers = {"Authorization": f"Bearer {self._settings.llm_api_key}"}
+        try:
+            response = self._http.get(url, headers=headers)
+        except httpx.HTTPError as exc:
+            raise LLMError(f"Could not reach the model host: {exc}") from exc
+        if response.status_code >= 400:
+            raise _http_error(response)
+        try:
+            body = response.json()
+        except json.JSONDecodeError as exc:
+            raise LLMError("The model host returned invalid JSON.") from exc
+        rows = body.get("data") if isinstance(body, dict) else None
+        ids: list[str] = []
+        for row in rows or []:
+            if not isinstance(row, dict) or row.get("active") is False:
+                continue
+            model_id = str(row.get("id") or "").removeprefix("models/")
+            if model_id and not _NON_CHAT.search(model_id):
+                ids.append(model_id)
+        return sorted(set(ids))
+
     def _complete(self, system: str, user: str, temperature: float, json_mode: bool) -> str:
         if self._settings.llm_transport == "anthropic":
             return self._anthropic(system, user, temperature)
@@ -65,6 +99,9 @@ class ChatClient:
         }
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
+        if "groq.com" in self._settings.llm_base_url and "gpt-oss" in self._settings.llm_model:
+            # Reasoning tokens share max_tokens; low effort leaves room for the reply.
+            payload["reasoning_effort"] = "low"
         headers = {
             "Authorization": f"Bearer {self._settings.llm_api_key}",
             "Content-Type": "application/json",
@@ -119,22 +156,7 @@ class ChatClient:
                 last = LLMError("The model host was busy.", status=response.status_code)
                 continue
             if response.status_code >= 400:
-                config = response.status_code in {401, 403, 404}
-                detail = ""
-                try:
-                    body = response.json()
-                    if isinstance(body, dict):
-                        err = body.get("error")
-                        if isinstance(err, dict):
-                            detail = str(err.get("message") or "")[:160]
-                        elif isinstance(err, str):
-                            detail = err[:160]
-                except Exception:
-                    detail = ""
-                message = f"Model host returned HTTP {response.status_code}."
-                if detail:
-                    message = f"{message} {detail}"
-                raise LLMError(message, status=response.status_code, config=config)
+                raise _http_error(response)
             try:
                 body = response.json()
             except json.JSONDecodeError as exc:
@@ -143,6 +165,25 @@ class ChatClient:
                 raise LLMError("The model host returned an unexpected payload.")
             return body
         raise last or LLMError("The model call failed.")
+
+
+def _http_error(response: httpx.Response) -> LLMError:
+    """Turn a 4xx/5xx into an LLMError that keeps the provider's own message."""
+    detail = ""
+    try:
+        body = response.json()
+        if isinstance(body, dict):
+            err = body.get("error")
+            if isinstance(err, dict):
+                detail = str(err.get("message") or "")[:200]
+            elif isinstance(err, str):
+                detail = err[:200]
+    except Exception:
+        detail = ""
+    message = f"Model host returned HTTP {response.status_code}."
+    if detail:
+        message = f"{message} {detail}"
+    return LLMError(message, status=response.status_code, config=response.status_code in {401, 403, 404})
 
 
 def _parse_json(text: str) -> dict:
