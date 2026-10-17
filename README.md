@@ -62,6 +62,21 @@ APP_PORT=8010 docker compose up --build
 
 `GET /healthz` reports `provider`, `transport`, `model`, `host`, and `llm_configured`. A 401, 403, or 404 from the model host returns a setup notice and does not change the call.
 
+## Deploy on Render
+
+1. Push this repo to GitHub (do not commit `.env`).
+2. On [Render](https://dashboard.render.com): **New → Web Service** → connect the repo.
+3. Use **Docker** runtime, Dockerfile at the repo root.
+4. Set environment variables (same names as `.env.example`), for example:
+   - `LLM_PROVIDER=claude`
+   - `ANTHROPIC_API_KEY=...`
+   - `LLM_MODEL=claude-sonnet-4-5`
+   - `DATA_DIR=/srv/data`
+5. Deploy. The container listens on `$PORT` (Render sets this; locally it defaults to `8000`).
+6. Open `https://YOUR-SERVICE.onrender.com` and check `/healthz`.
+
+Sessions use SQLite under `DATA_DIR`. On free Render that disk is ephemeral unless you attach a persistent Disk at `/srv/data`.
+
 Before a reply reaches the caller, an output guard blocks claim leaks and false “you're verified” lines, requires a mismatch statement and human offer when those flags are set, checks remaining-factor counts, and rejects invented case ids after verification. A hard violation regenerates once, then falls back to the templated reply.
 
 The sample button **Margaret’s denial** sends:
