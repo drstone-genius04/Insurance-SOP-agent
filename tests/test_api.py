@@ -106,14 +106,36 @@ def test_health_and_page(client: TestClient) -> None:
     assert health.status_code == 200
     body = health.json()
     assert body["status"] == "ok"
-    assert body["llm_configured"] is False
+    assert body["llm_configured"] is True
+    assert body["bring_your_own_key"] is True
     page = client.get("/")
     assert page.status_code == 200
     assert "Claims desk" in page.text
+    assert 'data-script="partial"' in page.text
+    assert 'data-script="email_yes"' in page.text
     missing = client.post("/api/session/nope/message", json={"message": "hello"})
     assert missing.status_code == 404
     invalid = client.post("/api/session", json={"consent_scenario": "nope"})
     assert invalid.status_code == 422
+
+
+def test_unconfigured_desk_blocks_without_advancing(tmp_path) -> None:
+    from app.config import ROOT, Settings
+    from app.llm.base import NullLLM
+    from app.main import create_app
+
+    settings = Settings(data_dir=tmp_path, fixtures_dir=ROOT / "fixtures", llm_api_key="", trace_enabled=True)
+    bare = TestClient(create_app(settings, NullLLM()))
+    assert bare.get("/healthz").json()["llm_configured"] is False
+    opened = bare.post("/api/session", json={}).json()
+    session_id = opened["session_id"]
+    blocked = bare.post(f"/api/session/{session_id}/message", json={"message": DEMO}).json()
+    assert "language model is not configured" in blocked["reply"].lower()
+    assert "llm_api_key" in blocked["reply"].lower()
+    assert blocked["state"]["phase"] == "VERIFY_ID"
+    assert blocked["state"]["verified"] is False
+    assert blocked["state"]["active_case_id"] is None
+    assert blocked["debug"] is None
 
 
 def test_transcript_is_redacted(client: TestClient) -> None:

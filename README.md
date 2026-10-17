@@ -6,7 +6,7 @@ Paste your own provider API key on the left panel, then try the sample calls. Th
 
 A claims-support agent that follows a fixed procedure and still talks like a person.
 
-Python decides the phase, the identity gate, which claim is open, and whether an email can be sent. The model only does two narrow jobs: read messy language into fields, and phrase the reply from facts the controller already chose. With no API key, those replies fall back to templates, so the procedure still runs.
+Python decides the phase, the identity gate, which claim is open, and whether an email can be sent. The model only does two narrow jobs: read messy language into fields, and phrase the reply from facts the controller already chose. With no server key and no visitor key, the desk answers with a fixed “language model is not configured” notice and does not advance the call — same idea as the reference harness. Paste a key in the left panel (or set `LLM_API_KEY`) to run the procedure. If the model fails a safety check, the reply falls back to a phase template.
 
 ## Phases
 
@@ -82,13 +82,18 @@ Sessions use SQLite under `DATA_DIR`. On free Render that disk is ephemeral unle
 
 Before a reply reaches the caller, an output guard blocks claim leaks and false “you're verified” lines, requires a mismatch statement and human offer when those flags are set, checks remaining-factor counts, and rejects invented case ids after verification. A hard violation regenerates once, then falls back to the templated reply.
 
-The sample button **Margaret’s denial** sends:
+Sample-call buttons match the reference harness walkthroughs:
 
-> I’m the policyholder. My name is Margaret Chen, policy POL-9921. I’m calling about my denied healthcare claim from January. DOB is 1985-03-15, SSN last four is 4472.
+| Button | What to expect |
+| --- | --- |
+| **Margaret’s denial** | Verifies, opens `CL-2048`, explains the denial from the record without re-asking. |
+| **Representative consent** | David for Margaret; consent pending, then approved on the next turn (or times out with the Consent script). |
+| **Frustrated caller** | Stays in Verify; no claim facts; empathy only. |
+| **Partial ID** | Name alone; still asks for more factors. |
+| **Out of scope** | Declines “What is reinforcement learning?” |
+| **Wrap up** / **Email yes** / **Email no** | Use after a case is open: offer → send to the masked address, or skip. |
 
-The desk should verify her, open `CL-2048`, and explain the denial from the record: the file was missing the pathology report and the office note. It should not have asked her to describe the claim again.
-
-Then try “What documents do I need to send and by when?”, “That’s all, thanks.”, and “Yes please send it.” The letter tray shows the three-part summary. “No thanks” closes without sending.
+After Margaret’s denial, try “What documents do I need to send and by when?”, then **Wrap up** and **Email yes**. The letter tray shows the three-part summary.
 
 Sessions are stored in `./data` and survive a container restart. Run either Compose or a local server, not both at once, because they share that database. The API never returns raw date of birth, phone, email, or last-4. The stored transcript shows `[DATE]`, `[PHONE]`, `[EMAIL]`, and `[ID4]`.
 

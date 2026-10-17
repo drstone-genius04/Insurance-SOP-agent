@@ -315,11 +315,21 @@ def small_talk_reply(ask: str) -> str:
     return f"Hello. {ask}"
 
 
-def config_notice(status: int) -> str:
+def not_configured_reply() -> str:
+    """Harness-style block when no server key and no visitor key were provided."""
     return (
-        f"I can't reach the language model (HTTP {status}). "
-        "Check LLM_API_KEY, LLM_PROVIDER, and LLM_MODEL, then send your message again. "
-        "Nothing about the call has changed."
+        "Thanks for reaching out. Our assistant's language model is not configured yet, so I cannot "
+        "process your message right now. Please set LLM_API_KEY (or paste your key in the panel) and try again."
+    )
+
+
+def config_notice(status: int) -> str:
+    if not status:
+        return not_configured_reply()
+    return (
+        f"Thanks for reaching out. Our assistant's language model rejected the request (HTTP {status}), "
+        "so I cannot process your message right now. Please check LLM_API_KEY, LLM_PROVIDER, and "
+        "LLM_MODEL (or the key in the panel) and try again. Nothing about the call has changed."
     )
 
 

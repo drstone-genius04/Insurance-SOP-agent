@@ -1,8 +1,9 @@
 """Per-turn SOP loop.
 
 Python owns phase order, the identity gate, claim selection, consent, scope, and escalation.
-The model may only fill a structured extraction and phrase the directive. A failed or empty
-model call still produces the templated reply, so the procedure does not depend on it.
+The model may only fill a structured extraction and phrase the directive. With no key
+configured, the turn is blocked with a fixed notice and the call state does not change.
+When a key is present, a failed or empty model draft falls back to the phase template.
 """
 
 from __future__ import annotations
@@ -101,6 +102,7 @@ class Harness:
         llm: LLMClient | None = None,
         configured: bool | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        use_model = self.settings.llm_configured if configured is None else configured
         if session["phase"] == "HUMAN_HANDOFF":
             redacted = redact_text(text, session["slots"])
             session["transcript"].append({"role": "user", "text": redacted})
@@ -108,10 +110,16 @@ class Harness:
             session["transcript"].append({"role": "agent", "text": reply})
             return _result(session, reply, ["Already transferred."], None, self.settings), session
 
+        # Match the reference harness: no key means a fixed notice and an unchanged call.
+        if not use_model:
+            redacted = redact_text(text, session["slots"])
+            reply = phrases.not_configured_reply()
+            return _result(session, reply, ["no LLM configured"], None, self.settings), None
+
         draft = deepcopy(session)
         draft["turn_flags"] = {"just_verified": False, "just_approved": False}
         try:
-            model_extract = self._extract(draft, text, llm or self.llm, self.settings.llm_configured if configured is None else configured)
+            model_extract = self._extract(draft, text, llm or self.llm, use_model)
         except LLMError as exc:
             if exc.config:
                 reply = phrases.config_notice(exc.status or 0)
@@ -156,7 +164,7 @@ class Harness:
                     directive["fallback"] = _ensure_offer(directive["fallback"])
                     decisions.append("Offered a person after repeated frustration.")
         _log_topic(draft)
-        reply, flags = self._phrase(draft, directive, redacted, llm or self.llm, self.settings.llm_configured if configured is None else configured)
+        reply, flags = self._phrase(draft, directive, redacted, llm or self.llm, use_model)
         if reply is None:
             notice = phrases.config_notice(0)
             return _result(session, notice, decisions + ["model config during phrasing"], None, self.settings), None
@@ -165,8 +173,6 @@ class Harness:
         return _result(draft, reply, decisions, debug, self.settings), draft
 
     def _extract(self, session: dict[str, Any], text: str, llm: LLMClient, configured: bool) -> dict[str, Any]:
-        if not configured:
-            return {}
         history = _history(session["transcript"], 6)
         user = (
             f"Phase: {session['phase']}\n"

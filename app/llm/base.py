@@ -25,7 +25,7 @@ class LLMClient(Protocol):
 
 
 class NullLLM:
-    """Used when no API key is configured, and by tests. Decisions stay in Python."""
+    """Stand-in for tests: empty extract/phrase so the phase template is used. Live no-key turns are blocked before this runs."""
 
     def complete_json(self, system: str, user: str, temperature: float = 0.0) -> dict:
         return {}

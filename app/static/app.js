@@ -15,9 +15,13 @@ const FACTOR_LABELS = {
 
 const SCRIPTS = {
   demo: "I’m the policyholder. My name is Margaret Chen, policy POL-9921. I’m calling about my denied healthcare claim from January. DOB is 1985-03-15, SSN last four is 4472.",
+  rep: "Hi, this is David Chen. I’m calling on behalf of my mother, Margaret Chen, about her denied healthcare claim from January.",
   angry: "I already told you who I am. This is ridiculous. Just tell me why my claim was denied.",
-  scope: "What is RL?",
-  rep: "This is David Chen. I’m calling on behalf of Margaret Chen about her denied healthcare claim from January.",
+  partial: "Hi, this is Margaret Chen, I need help with a claim.",
+  scope: "What is reinforcement learning?",
+  wrap: "That’s all I needed, thanks.",
+  email_yes: "Yes, please send me the summary.",
+  email_no: "No thanks, no email.",
 };
 
 const log = document.querySelector("#log");
@@ -128,7 +132,7 @@ function paintHealth() {
   panel.classList.toggle("error", keyState === "error");
   panel.classList.toggle("ready", keyState === "ready");
   if (keyState === "empty" || !key) {
-    node.textContent = "No key yet. Live replies stay off until you paste one.";
+    node.textContent = "No key yet. Messages stay blocked until you paste one (same as setting LLM_API_KEY).";
     return;
   }
   if (keyState === "checking") {
@@ -197,7 +201,8 @@ function noteKeyFailure(result) {
   const decisions = result?.debug?.decisions || [];
   const reply = (result?.reply || "").toLowerCase();
   const failed = decisions.some((line) => /model config|phrasing_config/i.test(line))
-    || reply.includes("can't reach the language model")
+    || reply.includes("language model is not configured")
+    || reply.includes("language model rejected the request")
     || reply.includes("check llm_api_key");
   if (!failed || !keyInput.value.trim()) return;
   keyState = "error";

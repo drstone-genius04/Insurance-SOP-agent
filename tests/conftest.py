@@ -38,7 +38,9 @@ class ScriptLLM:
 
 @pytest.fixture
 def client(tmp_path: Path) -> TestClient:
-    settings = Settings(data_dir=tmp_path, fixtures_dir=ROOT / "fixtures", llm_api_key="", trace_enabled=True)
+    # A placeholder key marks the desk "configured" so tests exercise the SOP.
+    # NullLLM returns empty drafts, so replies come from the phase templates.
+    settings = Settings(data_dir=tmp_path, fixtures_dir=ROOT / "fixtures", llm_api_key="sk-test", trace_enabled=True)
     return TestClient(create_app(settings, NullLLM()))
 
 
