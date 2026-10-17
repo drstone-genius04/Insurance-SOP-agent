@@ -39,7 +39,7 @@ def create_app(settings: Settings | None = None, llm: LLMClient | None = None) -
     client = llm if llm is not None else build_client(settings)
     harness = Harness(settings, records, client, store)
 
-    app = FastAPI(title="Harborline Claims Desk", version="1.0.0")
+    app = FastAPI(title="Claims Desk", version="1.0.0")
     app.state.harness = harness
     app.state.settings = settings
 

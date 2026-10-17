@@ -1,5 +1,5 @@
 [project]
-name = "harborline-claims-desk"
+name = "claims-desk"
 version = "1.0.0"
 description = "Insurance claims SOP harness: strict gates, flexible phrasing, memory across phases"
 requires-python = ">=3.12"

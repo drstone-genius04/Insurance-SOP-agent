@@ -74,6 +74,11 @@ _ANGRY = re.compile(r"\b(ridiculous|insane|furious|unacceptable|angry|outrageous
 _FRUSTRATED = re.compile(r"\b(frustrat\w*|already told you|sick of|annoying|come on|hurry up)\b", re.I)
 _ANXIOUS = re.compile(r"\b(anxious|worried|scared|nervous|afraid)\b", re.I)
 _CONFUSED = re.compile(r"\b(confused|don'?t understand|do not understand|what do you mean|i'?m lost)\b", re.I)
+_CLARIFY = re.compile(
+    r"\b(what do you mean|what does that mean|meaning|explain|clarify|say that again|"
+    r"don'?t understand|do not understand|confused|why)\b",
+    re.I,
+)
 _REFUSING = re.compile(
     r"\b(i won'?t|i will not|not giving you|none of your business|refuse to|i refuse)\b",
     re.I,
@@ -280,6 +285,10 @@ def _read_scope(text: str, parsed: Parsed) -> None:
         return
     if _SMALL.search(text):
         parsed.scope = "small_talk"
+        parsed.scope_locked = True
+        return
+    if _CLARIFY.search(text) and not _OFF_TOPIC.search(text):
+        parsed.scope = "in_scope_claim"
         parsed.scope_locked = True
         return
     if _OFF_TOPIC.search(text) or _QUESTION.search(text):

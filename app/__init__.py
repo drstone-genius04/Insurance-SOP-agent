@@ -1,1 +1,1 @@
-"""Harborline claims desk: a conversational SOP harness for insurance claims."""
+"""Claims desk: a conversational SOP harness for insurance claims."""

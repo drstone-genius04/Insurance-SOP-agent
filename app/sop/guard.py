@@ -44,6 +44,11 @@ _COUNT = re.compile(
     re.I,
 )
 _WORD_COUNTS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
+_SENT_CLAIM = re.compile(
+    r"\b(I(?:'ve| have)? (?:already |just )?sent|(?:has|have|was|been) (?:already )?sent|"
+    r"on its way|in your inbox|sending (?:it|that|the summary) now|I'll send (?:it|that|the summary) (?:right )?now)\b",
+    re.I,
+)
 _STALE_GATE = re.compile(
     r"\b(still need to hear|verbal consent|before I can discuss|before we can go over|"
     r"put (?:her|him|them) on|cannot discuss|can't discuss|need (?:her|his|their) consent)\b",
@@ -57,6 +62,7 @@ CORRECTIONS = {
     "missing_human_offer": "You must offer to transfer the caller to a human claims specialist.",
     "wrong_factor_count": "If you state how many details are still needed, the number must match the directive.",
     "ungrounded": "Only use case ids and amounts that appear in the directive facts.",
+    "false_sent": "No summary has been sent. Do not say it was sent, is on its way, or is in the caller's inbox. Ask whether to send it or skip.",
     "stale_gate": "Verification or consent is already done. Answer from the claim. Do not ask for consent or identity again.",
 }
 
@@ -107,6 +113,11 @@ def review(reply: str, directive: dict[str, Any], verified: bool) -> tuple[str, 
             flags.append("stale_gate")
             corrections.append(CORRECTIONS["stale_gate"])
             text = directive.get("fallback") or text
+
+    if facts.get("sent") is False and _SENT_CLAIM.search(text):
+        flags.append("false_sent")
+        corrections.append(CORRECTIONS["false_sent"])
+        text = directive.get("fallback") or text
 
     empathy = directive.get("empathy") or ""
     if empathy and not _EMPATHY.search(text):

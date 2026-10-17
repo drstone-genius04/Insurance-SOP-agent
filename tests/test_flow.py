@@ -262,6 +262,65 @@ def test_ungrounded_amounts_are_replaced(tmp_path) -> None:
     assert "ungrounded" in result["debug"]["guard"]
 
 
+class HistoryEchoLLM(ScriptLLM):
+    """Extractor that keeps returning the masked address it saw earlier in the call."""
+
+    def complete_json(self, system: str, user: str, temperature: float = 0.0) -> dict:
+        return {"email": "m*****@email.com"}
+
+
+def test_masked_email_from_history_does_not_block_send(tmp_path) -> None:
+    settings = Settings(data_dir=tmp_path, fixtures_dir=ROOT / "fixtures", llm_api_key="sk-test", trace_enabled=True)
+    client = TestClient(create_app(settings, HistoryEchoLLM("")))
+    session_id = client.post("/api/session", json={}).json()["session_id"]
+    say(client, session_id, DEMO)
+    say(client, session_id, "That's all, thanks.")
+    sent = say(client, session_id, "Yes please send it.")
+    assert "Declined a different email address." not in sent["debug"]["decisions"]
+    assert sent["state"]["phase"] == "CLOSED"
+    assert len(sent["state"]["outbox"]) == 1
+
+
+def test_false_sent_claim_is_replaced(tmp_path) -> None:
+    settings = Settings(data_dir=tmp_path, fixtures_dir=ROOT / "fixtures", llm_api_key="sk-test", trace_enabled=True)
+    client = TestClient(create_app(settings, ScriptLLM("I've already sent that summary to your inbox.")))
+    session_id = client.post("/api/session", json={}).json()["session_id"]
+    say(client, session_id, DEMO)
+    offer = say(client, session_id, "That's all, thanks.")
+    assert offer["state"]["outbox"] == []
+    assert "false_sent" in offer["debug"]["guard"]
+    assert "already sent" not in offer["reply"].lower()
+    assert "m*****@email.com" in offer["reply"]
+
+
+def test_typed_different_address_is_still_declined(client: TestClient) -> None:
+    session_id = _open(client)
+    say(client, session_id, DEMO)
+    say(client, session_id, "That's all, thanks.")
+    other = say(client, session_id, "Send it to someone@else.com instead.")
+    assert other["state"]["outbox"] == []
+    assert "address on file" in other["reply"].lower()
+
+
+def test_clarifying_question_is_not_off_topic(client: TestClient) -> None:
+    session_id = _open(client)
+    say(client, session_id, DEMO)
+    reply = say(client, session_id, "I am frustrated by this, what do you mean?")
+    assert reply["state"]["phase"] == "PROCESS_CASE"
+    assert reply["state"]["off_topic_streak"] == 0
+    assert "Declined an off-topic question." not in reply["debug"]["decisions"]
+
+
+def test_plain_no_after_close_stays_closed(client: TestClient) -> None:
+    session_id = _open(client)
+    say(client, session_id, DEMO)
+    say(client, session_id, "That's all, thanks.")
+    say(client, session_id, "Yes please send it.")
+    after = say(client, session_id, "no")
+    assert after["state"]["phase"] == "CLOSED"
+    assert len(after["state"]["outbox"]) == 1
+
+
 def test_bad_key_does_not_move_the_phase(tmp_path) -> None:
     settings = Settings(
         data_dir=tmp_path,

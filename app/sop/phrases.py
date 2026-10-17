@@ -31,7 +31,7 @@ def empathy_line(emotion: str) -> str:
 
 def greeting() -> str:
     return (
-        "Hello, I'm Avery at Harborline Mutual. I can help with a claim, and I'll keep the file "
+        "Hello, I'm Avery on the claims desk. I can help with a claim, and I'll keep the file "
         "sealed until three details match the policy. You can start with your full name and policy "
         "number, or the phone number or email we have on file."
     )
@@ -304,7 +304,7 @@ def scope_reply(ask: str, offer_human: bool, emotion: str) -> str:
     parts: list[str] = []
     if line := empathy_line(emotion):
         parts.append(line)
-    parts.append("I can only help with Harborline claims on this line, so I can't answer that.")
+    parts.append("I can only help with insurance claims on this line, so I can't answer that.")
     if offer_human:
         parts.append("If you keep running into questions I can't take, I can transfer you to a person.")
     parts.append(ask)
@@ -363,7 +363,7 @@ def summary_email(session: dict[str, Any], claim: dict[str, Any] | None) -> tupl
         "Next steps:\n"
         f"{next_steps}\n"
     )
-    return "Summary of your Harborline claims call", body
+    return "Summary of your claims call", body
 
 
 def choose(items: list[str]) -> str:

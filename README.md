@@ -1,4 +1,4 @@
-# Harborline Claims Desk
+# Claims Desk
 
 A claims-support agent that follows a fixed procedure and still talks like a person.
 
@@ -85,12 +85,22 @@ uvicorn app.main:app --reload
 
 ## Tests
 
+Use the project venv so Anaconda’s global `pytest` (and plugins like napari) do not get loaded:
+
 ```bash
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 python -m pytest -q
 ```
 
-The suite uses a fake model. It does not need a key or a network connection.
+Or without activating:
+
+```bash
+.venv/bin/python -m pytest -q
+```
+
+If the prompt shows both `(.venv)` and `(base)`, run `conda deactivate` first, or always call `.venv/bin/python -m pytest -q`. The suite uses a fake model and does not need a key or a network connection.
 
 ## Settings
 

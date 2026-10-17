@@ -8,6 +8,7 @@ model call still produces the templated reply, so the procedure does not depend 
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from copy import deepcopy
 from typing import Any
@@ -104,7 +105,7 @@ class Harness:
             return _result(session, reply, ["extractor unavailable"], None, self.settings), None
 
         parsed = parse_message(text, draft["phase"])
-        _merge_model(parsed, model_extract, draft["phase"])
+        _merge_model(parsed, model_extract, draft["phase"], text)
         redacted = redact_text(text, {**draft["slots"], **parsed.identity_values()})
         draft["transcript"].append({"role": "user", "text": redacted})
         draft["last_emotion"] = parsed.emotion
@@ -250,14 +251,20 @@ def _blank(scenario: str) -> dict[str, Any]:
     }
 
 
-def _merge_model(parsed: Parsed, model: dict[str, Any], phase: str) -> None:
+def _merge_model(parsed: Parsed, model: dict[str, Any], phase: str, text: str = "") -> None:
     """Let the model fill gaps. Never let it erase a value the parser already found."""
     if not model:
         return
     for field in ("name", "dob", "phone", "email", "id_last4", "policy_number"):
         if getattr(parsed, field) or not model.get(field):
             continue
-        setattr(parsed, field, str(model[field]).strip())
+        value = str(model[field]).strip()
+        if not _said_this_turn(field, value, text):
+            continue
+        setattr(parsed, field, value)
+    if phase in {"POST_PROCESS", "CLOSED"}:
+        # Wrap-up turns are short; the extractor tends to re-read intent from history.
+        return
     hints = model.get("case_hints") if isinstance(model.get("case_hints"), dict) else {}
     if not parsed.case_type and hints.get("case_type"):
         parsed.case_type = str(hints["case_type"]).lower()
@@ -282,7 +289,7 @@ def _merge_model(parsed: Parsed, model: dict[str, Any], phase: str) -> None:
     if not parsed.intent_path and path in _ALLOWED_PATH:
         parsed.intent_path = path
     emotion = str(model.get("emotion") or "")
-    if parsed.emotion == "neutral" and emotion in _ALLOWED_EMOTION:
+    if parsed.emotion == "neutral" and emotion in _ALLOWED_EMOTION and phase not in {"POST_PROCESS", "CLOSED"}:
         parsed.emotion = emotion
     scope = str(model.get("scope") or "")
     if not parsed.scope_locked and scope in _ALLOWED_SCOPE and phase not in {"POST_PROCESS", "PROCESS_CASE"}:
@@ -294,6 +301,25 @@ def _merge_model(parsed: Parsed, model: dict[str, Any], phase: str) -> None:
             parsed.representative_name = parsed.representative_name or _clean(model.get("representative_name"))
             parsed.on_behalf_of_name = parsed.on_behalf_of_name or _clean(model.get("on_behalf_of_name"))
             parsed.relationship = parsed.relationship or _clean(model.get("relationship"))
+
+
+def _said_this_turn(field: str, value: str, text: str) -> bool:
+    """The extractor sees history, so an identity value only counts if the caller typed it now."""
+    if "*" in value:
+        return False
+    lowered = text.lower()
+    digits = re.sub(r"\D", "", text)
+    if field == "email":
+        return value.lower() in lowered
+    if field in {"phone", "id_last4"}:
+        tail = re.sub(r"\D", "", value)[-4:]
+        return bool(tail) and tail in digits
+    if field == "dob":
+        year = re.sub(r"\D", "", value)[:4]
+        return bool(year) and year in digits
+    if field == "name":
+        return value.split()[-1].lower() in lowered if value.split() else False
+    return re.sub(r"\W", "", value).lower() in re.sub(r"\W", "", lowered)
 
 
 def _remember(session: dict[str, Any], parsed: Parsed) -> None:
@@ -639,11 +665,11 @@ def _post(session: dict[str, Any], parsed: Parsed, records: Records) -> tuple[di
     if not on_file:
         session["phase"] = "CLOSED"
         fallback = "There is no email on file, so I will close the call without sending a summary."
-        return _directive(session, "Close without an email.", {"verified": True}, "", fallback, records, parsed), False, "No email on file."
+        return _directive(session, "Close without an email.", {"verified": True, "sent": False}, "", fallback, records, parsed), False, "No email on file."
     supplied = parsed.email
     if supplied and supplied != str(on_file).lower():
         fallback = phrases.email_other_address(masked)
-        return _directive(session, "Decline any address that is not on file.", {"masked_email": masked}, "Should I send it to the address on file, or skip the email?", fallback, records, parsed), False, "Declined a different email address."
+        return _directive(session, "Decline any address that is not on file.", {"masked_email": masked, "sent": False}, "Should I send it to the address on file, or skip the email?", fallback, records, parsed), False, "Declined a different email address."
     consent = parsed.email_consent
     if consent is None:
         fallback = phrases.email_offer(masked, session["memory"]["email_preference"], claim, parsed.emotion)
@@ -651,12 +677,13 @@ def _post(session: dict[str, Any], parsed: Parsed, records: Records) -> tuple[di
             "masked_email": masked,
             "email_preference": session["memory"]["email_preference"],
             "active_case_id": session.get("active_case_id"),
+            "sent": False,
         }
         return _directive(session, "Ask before sending the summary. Do not send yet.", facts, "Should I send the summary, or skip the email?", fallback, records, parsed), False, "Offered the email summary."
     if consent == "yes":
         subject, body = phrases.summary_email(session, claim)
         if contains_secret(body, session["slots"]):
-            subject, body = "Summary of your Harborline claims call", "What we discussed:\n- A claim on your policy.\n\nClaim status:\n- See the call for the outcome on file.\n\nNext steps:\n- Call back if you need the next step repeated.\n"
+            subject, body = "Summary of your claims call", "What we discussed:\n- A claim on your policy.\n\nClaim status:\n- See the call for the outcome on file.\n\nNext steps:\n- Call back if you need the next step repeated.\n"
         session["outbox"].append({"to_masked": masked, "subject": subject, "body": body})
         session["phase"] = "CLOSED"
         fallback = phrases.email_sent(masked)
@@ -669,19 +696,21 @@ def _post(session: dict[str, Any], parsed: Parsed, records: Records) -> tuple[di
     if session["email_unclear"] >= 2:
         session["phase"] = "CLOSED"
         fallback = phrases.email_unclear_close()
-        return _directive(session, "Close because email consent stayed unclear.", {}, "", fallback, records, parsed), False, "Email consent unclear twice."
+        return _directive(session, "Close because email consent stayed unclear.", {"sent": False}, "", fallback, records, parsed), False, "Email consent unclear twice."
     fallback = phrases.email_offer(masked, session["memory"]["email_preference"], claim, parsed.emotion)
-    facts = {"masked_email": masked, "email_preference": session["memory"]["email_preference"], "active_case_id": session.get("active_case_id")}
+    facts = {"masked_email": masked, "email_preference": session["memory"]["email_preference"], "active_case_id": session.get("active_case_id"), "sent": False}
     return _directive(session, "Ask again before sending. Do not send yet.", facts, "Should I send the summary, or skip the email?", fallback, records, parsed), False, "Email consent unclear."
 
 
 def _closed(session: dict[str, Any], parsed: Parsed, message: str) -> tuple[dict[str, Any], bool, str]:
-    reopen = parsed.scope == "in_scope_claim" and not parsed.conversation_done and (parsed.intent_path or any(session["memory"]["case_hints"].values()) or "?" in message)
+    asked_something = bool(parsed.intent_path or parsed.case_type or parsed.case_id or "?" in message)
+    reopen = parsed.scope == "in_scope_claim" and not parsed.conversation_done and asked_something
     if reopen and parsed.scope != "small_talk":
         session["phase"] = "PROCESS_CASE" if session.get("active_case_id") else "RESOLVE_INTENT"
         return _empty_directive(), True, "Reopened the file."
     fallback = phrases.closed_reply()
-    return _directive(session, "Close warmly.", {"verified": session["verified"]}, "", fallback, None, parsed), False, "Call already closed."
+    facts = {"verified": session["verified"], "sent": bool(session["outbox"])}
+    return _directive(session, "Close warmly.", facts, "", fallback, None, parsed), False, "Call already closed."
 
 
 def _path_forbidden(path: str) -> list[str]:

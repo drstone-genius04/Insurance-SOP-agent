@@ -68,7 +68,7 @@ class ChatClient:
         # OpenRouter recommends these; harmless for other hosts.
         if "openrouter.ai" in self._settings.llm_base_url:
             headers["HTTP-Referer"] = "https://github.com/drstone-genius04/Insurance-SOP-agent"
-            headers["X-Title"] = "Harborline Claims Desk"
+            headers["X-Title"] = "Claims Desk"
         response = self._post(url, payload, headers)
         try:
             return str(response["choices"][0]["message"]["content"] or "")
