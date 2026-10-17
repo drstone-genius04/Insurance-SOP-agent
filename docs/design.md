@@ -23,22 +23,25 @@ Each caller turn:
 6. Ask the model to phrase that directive. The output guard checks the draft, regenerates once on a hard violation, then uses the template.
 
 ```mermaid
-stateDiagram-v2
-  [*] --> VERIFY_ID
-  VERIFY_ID --> RESOLVE_INTENT: 3 of 5 factors match
-  VERIFY_ID --> RESOLVE_INTENT: representative matched and policyholder consent approved
-  RESOLVE_INTENT --> PROCESS_CASE: hints select exactly one claim
-  PROCESS_CASE --> POST_PROCESS: conversation_done
-  POST_PROCESS --> CLOSED: email sent, declined, or email consent unclear twice
-  CLOSED --> PROCESS_CASE: new in-scope claim question
-  CLOSED --> RESOLVE_INTENT: new question, no claim selected yet
-  VERIFY_ID --> HUMAN_HANDOFF: mismatch beyond MAX_VERIFY_ATTEMPTS, or consent timed out
-  RESOLVE_INTENT --> HUMAN_HANDOFF: human requested, off-topic or frustration streak
-  PROCESS_CASE --> HUMAN_HANDOFF: same triggers
-  POST_PROCESS --> HUMAN_HANDOFF: same triggers
-  CLOSED --> HUMAN_HANDOFF: same triggers
-  HUMAN_HANDOFF --> [*]
+flowchart TB
+  caller[Caller message] --> read[Parser reads this turn]
+  read --> memory[Hints saved for later]
+  memory --> gate{File open?}
+
+  gate -->|sealed| sealAsk[Ask for three matching details]
+  gate -->|open| path[Keep only this path's facts]
+  sealAsk --> firewall[Firewall drops anything else]
+  path --> firewall
+  firewall --> voice[Model phrases the sealed card]
+  voice --> guard[Guard checks the sentence]
+
+  sealAsk -->|still angry, off-topic, or out of tries| person[Transfer to a person]
+  path -->|caller is finished| letter[Offer the letter on file]
+  letter -->|send| tray[Letter tray, then close]
+  letter -->|skip| done[Close with an empty tray]
 ```
+
+The same exits, in words: three matching details or an approved representative opens the file; one remembered claim is selected automatically; wrapping up offers the letter; a new claim question after close reopens the file; repeated mismatches, a timed-out consent, or a streak of off-topic or frustrated turns with no progress transfers the call.
 
 | Phase | Freedom | What reaches the model | What Python decides |
 | --- | --- | --- | --- |

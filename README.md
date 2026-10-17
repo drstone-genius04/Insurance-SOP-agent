@@ -1,31 +1,29 @@
 # Claims Desk
 
-**Live demo:** [https://insurance-sop-agent-zmss.onrender.com/](https://insurance-sop-agent-zmss.onrender.com/)
+**Try it:** [https://insurance-sop-agent-zmss.onrender.com/](https://insurance-sop-agent-zmss.onrender.com/)
 
-Paste your own provider API key on the left panel, then try the sample calls. The free Render instance may take a minute to wake up after idle time.
+Avery answers claim calls. Python decides whether the file is sealed, which claim is open, and whether a letter goes in the tray. The model only reads messy wording and phrases the reply. Paste your own API key in the left panel (the free Render instance can take a minute to wake). With no key at all, Avery says the model is not configured and the call does not move.
 
-A claims-support agent that follows a fixed procedure and still talks like a person.
+## One turn
 
-Python decides the phase, the identity gate, which claim is open, and whether an email can be sent. The model only does two narrow jobs: read messy language into fields, and phrase the reply from facts the controller already chose. With no server key and no visitor key, the desk answers with a fixed “language model is not configured” notice and does not advance the call. Paste a key in the left panel (or set `LLM_API_KEY`) to run the procedure. If the model fails a safety check, the reply falls back to a phase template.
+```mermaid
+flowchart TB
+  caller[Caller message] --> read[Parser reads this turn]
+  read --> memory[Hints saved for later]
+  memory --> gate{File open?}
+  gate -->|sealed| sealAsk[Ask for three matching details]
+  gate -->|open| path[Keep only this path's facts]
+  sealAsk --> firewall[Firewall drops anything else]
+  path --> firewall
+  firewall --> voice[Model phrases the sealed card]
+  voice --> guard[Guard checks the sentence]
+```
 
-The reference harness shows the model the whole claim file and checks the reply afterwards. This desk seals the directive first: before verification the prompt has no claim fields, and after verification only the fields for the current path (payment figures only when the caller asked about status or amount). The extractor cannot widen a turn onto those figures.
+Three details have to match before any claim fact is spoken: full name, date of birth, phone, email, or last 4 of an SSN or government ID. The policy number only finds the account. A hint said too early (“denied healthcare claim from January”) is kept and used after the file opens, so Avery does not ask the caller to start over.
 
-## Phases
+Payment figures stay off the card unless the caller asked about status or amount. Anger changes the tone. It does not unseal the file. “What is RL?” is declined; a third off-topic try, or frustration with no progress, transfers the call. Someone calling for the policyholder waits on `fixtures/representatives.json` and the consent script. Reciting Margaret’s date of birth does not verify David.
 
-`VERIFY_ID` → `RESOLVE_INTENT` → `PROCESS_CASE` → `POST_PROCESS`
-
-| Phase | Freedom | What the caller gets |
-| --- | --- | --- |
-| Verify | Strict | No claim facts until 3 of 5 details match: full name, date of birth, phone, email, last 4 of SSN or government ID. The policy number finds the account and does not count. |
-| Intent | Flexible | The controller picks a claim from what the caller already said, or asks which file when more than one fits. |
-| Case | Flexible, grounded | Answers come from the claim record and the document guideline. Invented case ids and amounts are discarded. |
-| Follow-up | Choice | The caller can send a summary to the masked address on file, or skip it. |
-
-Anything the caller says is stored for a later phase. “Denied healthcare claim from January,” said before verification, is used after the gate instead of asking again.
-
-Questions that are not about claims service, such as “What is RL?”, are declined. After three in a row the call is transferred. The same happens when frustration or refusal makes no progress. Anger changes the tone. It does not open the file.
-
-A caller on someone else’s behalf is matched to `fixtures/representatives.json` and waits for the scripted consent in `fixtures/consent_scenarios.json`. Reciting the policyholder’s date of birth or ID does not verify them.
+When the caller is done, Avery offers a summary to the masked address on file, or a skip. Only a yes writes the letter tray.
 
 ## Run with Docker
 
@@ -84,7 +82,7 @@ Sessions use SQLite under `DATA_DIR`. On free Render that disk is ephemeral unle
 
 Before a reply reaches the caller, an output guard blocks claim leaks and false “you're verified” lines, requires a mismatch statement and human offer when those flags are set, checks remaining-factor counts, and rejects invented case ids after verification. A hard violation regenerates once, then falls back to the templated reply.
 
-Sample calls, including the frustrated caller who demands the denial before verifying, are walked through in [docs/walkthroughs.md](docs/walkthroughs.md). The workflow diagram is in [docs/design.md](docs/design.md).
+Sample calls, including the frustrated caller who demands the denial before verifying, are in [docs/walkthroughs.md](docs/walkthroughs.md). The longer turn picture, with transfer and the letter tray, is in [docs/design.md](docs/design.md).
 
 | Button | What to expect |
 | --- | --- |
@@ -184,7 +182,7 @@ docker/                Entrypoint that keeps the data directory writable
 
 ## Documentation
 
-- [docs/design.md](docs/design.md) — phases, the workflow diagram, firewall, identity, memory, emotion, consent.
+- [docs/design.md](docs/design.md) — the turn picture, firewall, identity, memory, emotion, consent.
 - [docs/walkthroughs.md](docs/walkthroughs.md) — how to run the demo, including the frustrated caller.
 - [docs/behaviour-spec.md](docs/behaviour-spec.md) — each rule, the code that enforces it, and the test that pins it.
 - [docs/transcripts.md](docs/transcripts.md) — expected calls, phase by phase.
