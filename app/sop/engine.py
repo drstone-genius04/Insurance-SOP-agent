@@ -65,12 +65,21 @@ class Harness:
         self.store.save(session)
         return {"session_id": session["id"], "reply": reply, "state": public_state(session), "debug": None}
 
-    def message(self, session_id: str, text: str) -> dict[str, Any]:
-        """Take one caller turn. Return the reply, the public state, and an optional trace."""
+    def message(
+        self,
+        session_id: str,
+        text: str,
+        llm: LLMClient | None = None,
+        configured: bool | None = None,
+    ) -> dict[str, Any]:
+        """Take one caller turn. Return the reply, the public state, and an optional trace.
+
+        `llm` and `configured` let one request use a visitor's key without changing the process client.
+        """
         current = self.store.get(session_id)
         if current is None:
             raise KeyError(session_id)
-        result, committed = self._turn(current, text)
+        result, committed = self._turn(current, text, llm or self.llm, self.settings.llm_configured if configured is None else configured)
         if committed is not None:
             self.store.save(committed)
         return result
@@ -85,7 +94,13 @@ class Harness:
             "transcript": list(session["transcript"]),
         }
 
-    def _turn(self, session: dict[str, Any], text: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    def _turn(
+        self,
+        session: dict[str, Any],
+        text: str,
+        llm: LLMClient | None = None,
+        configured: bool | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         if session["phase"] == "HUMAN_HANDOFF":
             redacted = redact_text(text, session["slots"])
             session["transcript"].append({"role": "user", "text": redacted})
@@ -96,7 +111,7 @@ class Harness:
         draft = deepcopy(session)
         draft["turn_flags"] = {"just_verified": False, "just_approved": False}
         try:
-            model_extract = self._extract(draft, text)
+            model_extract = self._extract(draft, text, llm or self.llm, self.settings.llm_configured if configured is None else configured)
         except LLMError as exc:
             if exc.config:
                 reply = phrases.config_notice(exc.status or 0)
@@ -141,7 +156,7 @@ class Harness:
                     directive["fallback"] = _ensure_offer(directive["fallback"])
                     decisions.append("Offered a person after repeated frustration.")
         _log_topic(draft)
-        reply, flags = self._phrase(draft, directive, redacted)
+        reply, flags = self._phrase(draft, directive, redacted, llm or self.llm, self.settings.llm_configured if configured is None else configured)
         if reply is None:
             notice = phrases.config_notice(0)
             return _result(session, notice, decisions + ["model config during phrasing"], None, self.settings), None
@@ -149,8 +164,8 @@ class Harness:
         debug = _debug(draft, parsed, model_extract, decisions, directive, flags)
         return _result(draft, reply, decisions, debug, self.settings), draft
 
-    def _extract(self, session: dict[str, Any], text: str) -> dict[str, Any]:
-        if not self.settings.llm_configured:
+    def _extract(self, session: dict[str, Any], text: str, llm: LLMClient, configured: bool) -> dict[str, Any]:
+        if not configured:
             return {}
         history = _history(session["transcript"], 6)
         user = (
@@ -158,9 +173,16 @@ class Harness:
             f"Known factor types: {', '.join(name for name in FACTORS if session['matched'].get(name)) or 'none'}\n"
             f"History:\n{history}\n\nCaller message:\n{text}"
         )
-        return self.llm.complete_json(EXTRACT_SYSTEM, user, temperature=0.0)
+        return llm.complete_json(EXTRACT_SYSTEM, user, temperature=0.0)
 
-    def _phrase(self, session: dict[str, Any], directive: dict[str, Any], redacted: str) -> tuple[str | None, list[str]]:
+    def _phrase(
+        self,
+        session: dict[str, Any],
+        directive: dict[str, Any],
+        redacted: str,
+        llm: LLMClient,
+        configured: bool,
+    ) -> tuple[str | None, list[str]]:
         """Return None when the model host rejects the key, so the turn can be discarded."""
         drafted = ""
         temperature = 0.2 if directive.get("freedom") == "strict" else 0.5
@@ -180,9 +202,9 @@ class Harness:
             f"Directive:\n{json.dumps(visible, indent=2)}\n\n"
             f"History:\n{history}\n\nCaller just said:\n{redacted}"
         )
-        if self.settings.llm_configured and session["phase"] != "HUMAN_HANDOFF":
+        if configured and session["phase"] != "HUMAN_HANDOFF":
             try:
-                drafted = self.llm.complete_text(REPLY_SYSTEM, base_user, temperature=temperature)
+                drafted = llm.complete_text(REPLY_SYSTEM, base_user, temperature=temperature)
             except LLMError as exc:
                 if exc.config:
                     return None, ["phrasing_config"]
@@ -192,13 +214,13 @@ class Harness:
         if (
             needs_regen(flags)
             and corrections
-            and self.settings.llm_configured
+            and configured
             and session["phase"] != "HUMAN_HANDOFF"
             and drafted
         ):
             try:
                 fix = "CRITICAL CORRECTION:\n- " + "\n- ".join(corrections)
-                second = self.llm.complete_text(
+                second = llm.complete_text(
                     REPLY_SYSTEM,
                     f"{base_user}\n\n{fix}\n\nRewrite the reply.",
                     temperature=0.1,

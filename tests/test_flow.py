@@ -321,6 +321,22 @@ def test_plain_no_after_close_stays_closed(client: TestClient) -> None:
     assert len(after["state"]["outbox"]) == 1
 
 
+def test_visitor_model_is_used_when_the_server_has_no_key(tmp_path) -> None:
+    from app.llm.base import NullLLM
+    from app.sop.engine import Harness
+    from app.store import SessionStore
+    from app.tools.records import Records
+
+    settings = Settings(data_dir=tmp_path, fixtures_dir=ROOT / "fixtures", llm_api_key="")
+    harness = Harness(settings, Records.load(settings.fixtures_dir), NullLLM(), SessionStore(tmp_path / "sessions.db"))
+    opened = harness.start()
+    result = harness.message(opened["session_id"], "What is RL?", llm=ScriptLLM("VISITOR-MODEL"), configured=True)
+    assert "VISITOR-MODEL" in result["reply"]
+    other = harness.start()
+    templated = harness.message(other["session_id"], "What is RL?")
+    assert "VISITOR-MODEL" not in templated["reply"]
+
+
 def test_bad_key_does_not_move_the_phase(tmp_path) -> None:
     settings = Settings(
         data_dir=tmp_path,

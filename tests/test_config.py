@@ -6,7 +6,7 @@ import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from app.config import load_settings, resolve_provider
+from app.config import Settings, caller_settings, load_settings, resolve_provider
 
 
 @contextmanager
@@ -85,3 +85,16 @@ def test_openrouter_preset(monkeypatch) -> None:
     assert settings.llm_transport == "openai"
     assert settings.llm_api_key == "or-test"
     assert "openrouter.ai" in settings.llm_base_url
+
+
+def test_caller_settings_override_the_server_key() -> None:
+    base = Settings(llm_api_key="", llm_provider="openai", llm_model="gpt-4o-mini")
+    assert caller_settings(base, "claude", None, "  ", None) is None
+    chosen = caller_settings(base, "claude", "claude-sonnet-4-5", "sk-visitor", None)
+    assert chosen is not None
+    assert chosen.llm_provider == "claude"
+    assert chosen.llm_transport == "anthropic"
+    assert chosen.llm_api_key == "sk-visitor"
+    assert chosen.llm_model == "claude-sonnet-4-5"
+    assert chosen.llm_base_url == "https://api.anthropic.com"
+    assert base.llm_api_key == ""

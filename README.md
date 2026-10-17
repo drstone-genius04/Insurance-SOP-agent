@@ -67,13 +67,10 @@ APP_PORT=8010 docker compose up --build
 1. Push this repo to GitHub (do not commit `.env`).
 2. On [Render](https://dashboard.render.com): **New → Web Service** → connect the repo.
 3. Use **Docker** runtime, Dockerfile at the repo root.
-4. Set environment variables (same names as `.env.example`), for example:
-   - `LLM_PROVIDER=claude`
-   - `ANTHROPIC_API_KEY=...`
-   - `LLM_MODEL=claude-sonnet-4-5`
-   - `DATA_DIR=/srv/data`
-5. Deploy. The container listens on `$PORT` (Render sets this; locally it defaults to `8000`).
-6. Open `https://YOUR-SERVICE.onrender.com` and check `/healthz`.
+4. You do not need to put an API key on Render. Each visitor picks a provider and model on the page and pastes their own key. The key stays in that browser tab and is sent only with their messages. It is not saved in the session database.
+5. Optional server key (local Docker, or a private demo): `LLM_PROVIDER`, `ANTHROPIC_API_KEY` or `LLM_API_KEY`, and `LLM_MODEL`. A visitor key overrides it for that turn.
+6. Deploy. The container listens on `$PORT` (Render sets this; locally it defaults to `8000`).
+7. Open `https://YOUR-SERVICE.onrender.com`, paste a key, and check `/healthz`.
 
 Sessions use SQLite under `DATA_DIR`. On free Render that disk is ephemeral unless you attach a persistent Disk at `/srv/data`.
 

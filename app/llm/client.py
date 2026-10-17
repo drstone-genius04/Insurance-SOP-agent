@@ -37,6 +37,10 @@ class ChatClient:
     def complete_text(self, system: str, user: str, temperature: float = 0.4) -> str:
         return self._complete(system, user, temperature, json_mode=False).strip()
 
+    def close(self) -> None:
+        """Close the HTTP client. Visitor-key clients are one request long."""
+        self._http.close()
+
     def _complete(self, system: str, user: str, temperature: float, json_mode: bool) -> str:
         if self._settings.llm_transport == "anthropic":
             return self._anthropic(system, user, temperature)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -149,6 +149,61 @@ def _first_key() -> str:
         if value:
             return value
     return ""
+
+
+# Shown in the desk. Anthropic is offered as Claude; Google as Gemini.
+PUBLIC_PROVIDERS = (
+    "claude",
+    "openai",
+    "openrouter",
+    "groq",
+    "together",
+    "deepseek",
+    "mistral",
+    "gemini",
+    "fireworks",
+    "ollama",
+)
+
+
+def provider_catalog() -> list[dict[str, str]]:
+    """Provider choices for the page. Never includes an API key."""
+    catalog: list[dict[str, str]] = []
+    for label in PUBLIC_PROVIDERS:
+        preset = PROVIDER_PRESETS[label]
+        _, transport = resolve_provider(label)
+        catalog.append(
+            {
+                "id": label,
+                "label": label.capitalize(),
+                "model": preset["model"],
+                "transport": transport,
+            }
+        )
+    return catalog
+
+
+def caller_settings(
+    base: Settings,
+    provider: str | None,
+    model: str | None,
+    api_key: str | None,
+    base_url: str | None,
+) -> Settings | None:
+    """Build request settings from a visitor key. None means keep the server client."""
+    key = (api_key or "").strip()
+    if not key:
+        return None
+    label, transport = resolve_provider(provider or "openai")
+    preset = PROVIDER_PRESETS.get(label) or PROVIDER_PRESETS.get(transport) or PROVIDER_PRESETS["openai"]
+    return replace(
+        base,
+        llm_provider=label,
+        llm_transport=transport,
+        llm_api_key=key,
+        llm_model=(model or "").strip() or preset["model"],
+        llm_base_url=(base_url or "").strip() or preset["base_url"],
+    )
 
 
 def resolve_provider(raw: str | None) -> tuple[str, str]:

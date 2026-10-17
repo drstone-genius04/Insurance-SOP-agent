@@ -26,6 +26,31 @@ const send = document.querySelector("#send");
 const banner = document.querySelector("#banner");
 let sessionId = null;
 let busy = false;
+let providers = [];
+/** empty | unchecked | checking | ready | error */
+let keyState = "empty";
+let keyError = "";
+let lastChecked = "";
+
+const providerSelect = document.querySelector("#llm-provider");
+const modelInput = document.querySelector("#llm-model");
+const keyInput = document.querySelector("#llm-key");
+const useKeyButton = document.querySelector("#use-key");
+
+providerSelect.addEventListener("change", () => {
+  const chosen = providers.find((item) => item.id === providerSelect.value);
+  if (chosen) modelInput.value = chosen.model;
+  markUnchecked();
+});
+modelInput.addEventListener("input", markUnchecked);
+keyInput.addEventListener("input", markUnchecked);
+useKeyButton.addEventListener("click", () => {
+  checkKey();
+});
+document.querySelector("#key-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  checkKey();
+});
 
 document.querySelector("#composer").addEventListener("submit", (event) => {
   event.preventDefault();
@@ -46,15 +71,148 @@ document.querySelectorAll("[data-script]").forEach((button) => {
 
 boot(false);
 
+function saveKey() {
+  sessionStorage.setItem("claims.provider", providerSelect.value);
+  sessionStorage.setItem("claims.model", modelInput.value.trim());
+  sessionStorage.setItem("claims.key", keyInput.value);
+}
+
+function fingerprint() {
+  return `${providerSelect.value}|${modelInput.value.trim()}|${keyInput.value.trim()}`;
+}
+
+function markUnchecked() {
+  saveKey();
+  const key = keyInput.value.trim();
+  if (!key) {
+    keyState = "empty";
+    keyError = "";
+    lastChecked = "";
+  } else {
+    keyState = "unchecked";
+    keyError = "";
+  }
+  paintHealth();
+}
+
+function callerBody() {
+  const key = keyInput.value.trim();
+  if (!key) return {};
+  return {
+    llm_provider: providerSelect.value,
+    llm_model: modelInput.value.trim(),
+    llm_api_key: key,
+  };
+}
+
+function paintHealth() {
+  const node = document.querySelector("#health");
+  const panel = document.querySelector("#key-panel");
+  const key = keyInput.value.trim();
+  const modelLabel = `${providerSelect.value} / ${modelInput.value.trim() || "default model"}`;
+  panel.classList.toggle("missing", keyState === "empty" || keyState === "unchecked");
+  panel.classList.toggle("error", keyState === "error");
+  panel.classList.toggle("ready", keyState === "ready");
+  if (keyState === "empty" || !key) {
+    node.textContent = "No key yet. Live replies stay off until you paste one.";
+    return;
+  }
+  if (keyState === "checking") {
+    node.textContent = `Checking ${modelLabel}…`;
+    return;
+  }
+  if (keyState === "error") {
+    node.textContent = keyError || "That key did not work. Fix it and click Use this key again.";
+    return;
+  }
+  if (keyState === "ready") {
+    node.textContent = `Ready. This tab will use ${modelLabel}.`;
+    return;
+  }
+  node.textContent = "Key entered. Click Use this key to confirm it works.";
+}
+
+async function checkKey() {
+  saveKey();
+  const key = keyInput.value.trim();
+  if (!key) {
+    keyState = "empty";
+    keyError = "";
+    paintHealth();
+    return;
+  }
+  keyState = "checking";
+  keyError = "";
+  paintHealth();
+  useKeyButton.disabled = true;
+  try {
+    const result = await fetch("/api/llm/check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(callerBody()),
+    }).then(readJson);
+    if (result.ok) {
+      keyState = "ready";
+      keyError = "";
+      lastChecked = fingerprint();
+    } else {
+      keyState = "error";
+      keyError = result.error || "That key did not work.";
+      lastChecked = fingerprint();
+    }
+  } catch (error) {
+    keyState = "error";
+    keyError = error.message || "Could not reach the model host.";
+    lastChecked = fingerprint();
+  } finally {
+    useKeyButton.disabled = false;
+    paintHealth();
+  }
+}
+
+function noteKeyFailure(result) {
+  const decisions = result?.debug?.decisions || [];
+  const reply = (result?.reply || "").toLowerCase();
+  const failed = decisions.some((line) => /model config|phrasing_config/i.test(line))
+    || reply.includes("can't reach the language model")
+    || reply.includes("check llm_api_key");
+  if (!failed || !keyInput.value.trim()) return;
+  keyState = "error";
+  keyError = "That key or model failed on the last turn. Fix it and click Use this key.";
+  lastChecked = fingerprint();
+  paintHealth();
+}
+
+async function loadProviders() {
+  const payload = await fetch("/api/providers").then((response) => response.json());
+  providers = payload.providers || [];
+  providerSelect.replaceChildren();
+  providers.forEach((item) => {
+    const option = document.createElement("option");
+    option.value = item.id;
+    option.textContent = item.label;
+    option.dataset.model = item.model;
+    providerSelect.append(option);
+  });
+  const savedProvider = sessionStorage.getItem("claims.provider");
+  if (savedProvider && providers.some((item) => item.id === savedProvider)) {
+    providerSelect.value = savedProvider;
+  }
+  const chosen = providers.find((item) => item.id === providerSelect.value);
+  modelInput.value = sessionStorage.getItem("claims.model") || (chosen ? chosen.model : "");
+  keyInput.value = sessionStorage.getItem("claims.key") || "";
+  keyState = keyInput.value.trim() ? "unchecked" : "empty";
+  keyError = "";
+  lastChecked = "";
+}
+
 async function boot(fresh) {
   banner.hidden = true;
   if (fresh) log.replaceChildren();
   try {
-    const health = await fetch("/healthz").then((response) => response.json());
-    const healthNode = document.querySelector("#health");
-    healthNode.textContent = health.llm_configured
-      ? `Model ready · ${health.provider}/${health.model}`
-      : "Templated replies · add LLM_API_KEY or ANTHROPIC_API_KEY for natural phrasing";
+    if (!providers.length) await loadProviders();
+    await fetch("/healthz").then((response) => response.json());
+    paintHealth();
     const scenario = document.querySelector("#scenario").value;
     const opened = await fetch("/api/session", {
       method: "POST",
@@ -79,8 +237,9 @@ async function submit(text) {
     const result = await fetch(`/api/session/${sessionId}/message`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ message, ...callerBody() }),
     }).then(readJson);
+    noteKeyFailure(result);
     paint(result, true);
   } catch (error) {
     fail(error.message || "The message did not go through.");

@@ -16,7 +16,6 @@
         <h1>Claims desk</h1>
       </div>
       <div class="mast-actions">
-        <p id="health" class="health">Checking the line…</p>
         <label class="scenario">
           Consent script
           <select id="scenario" aria-label="Consent script for the next call">
@@ -28,6 +27,29 @@
       </div>
     </header>
 
+    <div class="workspace">
+      <aside id="key-panel" class="key-panel missing" aria-label="Your model">
+        <p class="key-kicker">Required for a live model</p>
+        <h2>Use your API key</h2>
+        <p class="key-note">This desk does not ship a key. Pick a provider, confirm the model, and paste your own key. It stays in this browser tab and is not saved on the server.</p>
+        <form id="key-form" class="key-form" autocomplete="off">
+          <label>
+            Provider
+            <select id="llm-provider" aria-label="Model provider"></select>
+          </label>
+          <label>
+            Model
+            <input id="llm-model" type="text" spellcheck="false" aria-label="Model name" placeholder="model name">
+          </label>
+          <label>
+            Your API key
+            <input id="llm-key" type="password" spellcheck="false" aria-label="Your API key" placeholder="Paste your key here" autocomplete="off">
+          </label>
+          <button id="use-key" class="use-key" type="button">Use this key</button>
+        </form>
+        <p id="health" class="health">Checking the line…</p>
+      </aside>
+      <div class="workspace-main">
     <ol id="journey" class="journey" aria-label="SOP phases"></ol>
 
     <div class="folder">
@@ -73,6 +95,8 @@
           <ol id="decisions"></ol>
         </details>
       </aside>
+    </div>
+      </div>
     </div>
     <p id="banner" class="banner" hidden></p>
   </div>
