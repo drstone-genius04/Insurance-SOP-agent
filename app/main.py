@@ -48,7 +48,9 @@ def create_app(settings: Settings | None = None, llm: LLMClient | None = None) -
         return {
             "status": "ok",
             "provider": settings.llm_provider,
+            "transport": settings.llm_transport,
             "model": settings.llm_model,
+            "host": settings.llm_host,
             "llm_configured": settings.llm_configured,
         }
 

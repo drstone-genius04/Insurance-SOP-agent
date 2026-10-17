@@ -29,16 +29,26 @@ From this directory:
 cp .env.example .env
 ```
 
-Put a key in `.env` if you want the model to phrase replies:
+Put a key in `.env` if you want the model to phrase replies.
+
+**Claude / Anthropic:**
 
 ```bash
-LLM_API_KEY=sk-...
-# LLM_PROVIDER=anthropic
-# LLM_MODEL=gpt-4o-mini
-# LLM_BASE_URL=https://api.openai.com/v1
+LLM_PROVIDER=claude
+ANTHROPIC_API_KEY=sk-ant-...
+# or: LLM_API_KEY=sk-ant-...
+# optional: LLM_MODEL=claude-haiku-4-5-20251001
 ```
 
-OpenAI-compatible hosts work too. Point `LLM_BASE_URL` at the base that precedes `/chat/completions` (OpenRouter, Ollama, vLLM).
+**OpenAI:**
+
+```bash
+LLM_PROVIDER=openai
+OPENAI_API_KEY=sk-...
+# or: LLM_API_KEY=sk-...
+```
+
+**Other hosts** (OpenAI-compatible chat completions): set `LLM_PROVIDER` to `openrouter`, `ollama`, `groq`, `together`, `deepseek`, `mistral`, `gemini`, or `fireworks`, or keep `openai` and set `LLM_BASE_URL` yourself. Provider-specific keys such as `OPENROUTER_API_KEY` and `GOOGLE_API_KEY` are accepted.
 
 ```bash
 docker compose up --build
@@ -50,7 +60,9 @@ Open http://localhost:8000. If that port is taken:
 APP_PORT=8010 docker compose up --build
 ```
 
-`GET /healthz` reports `llm_configured: true` when a key was provided. A 401, 403, or 404 from the model host returns a setup notice and does not change the call.
+`GET /healthz` reports `provider`, `transport`, `model`, `host`, and `llm_configured`. A 401, 403, or 404 from the model host returns a setup notice and does not change the call.
+
+Before a reply reaches the caller, an output guard blocks claim leaks and false “you're verified” lines, requires a mismatch statement and human offer when those flags are set, checks remaining-factor counts, and rejects invented case ids after verification. A hard violation regenerates once, then falls back to the templated reply.
 
 The sample button **Margaret’s denial** sends:
 

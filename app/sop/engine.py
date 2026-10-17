@@ -15,12 +15,12 @@ from typing import Any
 from app.config import Settings
 from app.llm.base import LLMClient, LLMError
 from app.sop import phrases
-from app.sop.guard import contains_secret, review
+from app.sop.guard import contains_secret, needs_regen, review
 from app.sop.parse import Parsed, parse_message
 from app.sop.prompts import EXTRACT_SYSTEM, REPLY_SYSTEM
 from app.sop.redact import mask_mapping, redact_text
 from app.store import SessionStore
-from app.tools.records import Records, claim_brief, claim_facts, mask_email
+from app.tools.records import Records, claim_brief, mask_email
 
 FACTORS = phrases.FACTORS
 NEGATIVE = {"angry", "frustrated", "refusing"}
@@ -162,31 +162,52 @@ class Harness:
     def _phrase(self, session: dict[str, Any], directive: dict[str, Any], redacted: str) -> tuple[str | None, list[str]]:
         """Return None when the model host rejects the key, so the turn can be discarded."""
         drafted = ""
+        temperature = 0.2 if directive.get("freedom") == "strict" else 0.5
+        history = _history(session["transcript"][:-1], 8)
+        visible = {
+            "phase": directive["phase"],
+            "freedom": directive["freedom"],
+            "goal": directive["goal"],
+            "facts": directive["facts"],
+            "must_ask": directive["must_ask"],
+            "instructions": directive["instructions"],
+            "forbidden": directive["forbidden"],
+            "tone": directive["tone"],
+            "empathy": directive["empathy"],
+        }
+        base_user = (
+            f"Directive:\n{json.dumps(visible, indent=2)}\n\n"
+            f"History:\n{history}\n\nCaller just said:\n{redacted}"
+        )
         if self.settings.llm_configured and session["phase"] != "HUMAN_HANDOFF":
             try:
-                temperature = 0.2 if directive.get("freedom") == "strict" else 0.5
-                history = _history(session["transcript"][:-1], 8)
-                visible = {
-                    "phase": directive["phase"],
-                    "freedom": directive["freedom"],
-                    "goal": directive["goal"],
-                    "facts": directive["facts"],
-                    "must_ask": directive["must_ask"],
-                    "instructions": directive["instructions"],
-                    "forbidden": directive["forbidden"],
-                    "tone": directive["tone"],
-                    "empathy": directive["empathy"],
-                }
-                user = (
-                    f"Directive:\n{json.dumps(visible, indent=2)}\n\n"
-                    f"History:\n{history}\n\nCaller just said:\n{redacted}"
-                )
-                drafted = self.llm.complete_text(REPLY_SYSTEM, user, temperature=temperature)
+                drafted = self.llm.complete_text(REPLY_SYSTEM, base_user, temperature=temperature)
             except LLMError as exc:
                 if exc.config:
                     return None, ["phrasing_config"]
                 drafted = ""
-        reply, flags = review(drafted, directive, bool(session["verified"]))
+        reply, flags, corrections = review(drafted, directive, bool(session["verified"]))
+        # One regeneration when a hard SOP rule fired, matching the finished harness tripwire.
+        if (
+            needs_regen(flags)
+            and corrections
+            and self.settings.llm_configured
+            and session["phase"] != "HUMAN_HANDOFF"
+            and drafted
+        ):
+            try:
+                fix = "CRITICAL CORRECTION:\n- " + "\n- ".join(corrections)
+                second = self.llm.complete_text(
+                    REPLY_SYSTEM,
+                    f"{base_user}\n\n{fix}\n\nRewrite the reply.",
+                    temperature=0.1,
+                )
+                reply, flags, _ = review(second, directive, bool(session["verified"]))
+                flags = [*flags, "regenerated"]
+            except LLMError as exc:
+                if exc.config:
+                    return None, ["phrasing_config"]
+                flags = [*flags, "regen_failed"]
         return reply, flags
 
 
@@ -570,7 +591,7 @@ def _process(
             "What else would you like to know about this claim?"
         )
     else:
-        fallback = phrases.claim_reply(claim, message, remembered, switched)
+        fallback = phrases.claim_reply(claim, message, remembered, switched, session.get("intent_path"))
     if session["turn_flags"].get("just_approved"):
         fallback = f"{session['policyholder_name']} approved the consent request. " + fallback
     elif session["turn_flags"].get("just_verified"):
@@ -578,24 +599,36 @@ def _process(
         fallback = f"You're verified, {name}. " + fallback
     if session["memory"]["email_preference"] == "yes" and "email" in message.lower():
         fallback += " I've noted that you'd like this by email, and I'll ask before I send anything."
+    path = session.get("intent_path") or "general_claim_question"
+    allowed_claim = phrases.path_facts(claim, path)
     facts = {
         "verified": True,
-        "claim": claim_facts(claim),
-        "field_descriptions": (records.schema.get("field_descriptions") or {}),
-        "guidance": records.guidance_lines(claim, session.get("intent_path"), message),
-        "other_claims": [claim_brief(row) for row in records.claims_for(session["party_id"]) if row["case_id"] != claim["case_id"]],
+        "workflow_path": path,
+        "claim": allowed_claim,
+        "guidance": records.guidance_lines(claim, path, message) if path in {"document_submission", "next_steps", "appeal", "denial_question"} else [],
         "caller_context": remembered,
     }
+    if session.get("caller_role") == "representative":
+        facts["consent_status"] = session.get("consent_status")
+        facts["speaking_with"] = session.get("representative_name")
+    if path == "status_inquiry":
+        facts["field_descriptions"] = records.schema.get("field_descriptions") or {}
+    goal = f"Answer only on the {path} path, using the claim fields in facts and nothing else."
+    if session.get("consent_status") == "approved":
+        goal += " Consent is already approved. Do not ask for it again."
     directive = _directive(
         session,
-        "Answer only from the claim record and the guideline text.",
+        goal,
         facts,
         "What else would you like to know about this claim?",
         fallback,
         records,
         parsed,
     )
-    return directive, False, f"Answered from {claim['case_id']}."
+    directive["forbidden"] = _path_forbidden(path)
+    if session.get("consent_status") == "approved":
+        directive["forbidden"] = [*directive["forbidden"], "asking for consent or identity again"]
+    return directive, False, f"Answered {path} from {claim['case_id']}."
 
 
 def _post(session: dict[str, Any], parsed: Parsed, records: Records) -> tuple[dict[str, Any], bool, str]:
@@ -649,6 +682,14 @@ def _closed(session: dict[str, Any], parsed: Parsed, message: str) -> tuple[dict
         return _empty_directive(), True, "Reopened the file."
     fallback = phrases.closed_reply()
     return _directive(session, "Close warmly.", {"verified": session["verified"]}, "", fallback, None, parsed), False, "Call already closed."
+
+
+def _path_forbidden(path: str) -> list[str]:
+    if path == "status_inquiry":
+        return ["documents that are not on this claim", "a denial reason that is not in facts"]
+    if path in {"denial_question", "appeal", "document_submission", "next_steps"}:
+        return ["dollar amounts", "reimbursement figures", "claim ids other than the active one"]
+    return ["dollar amounts", "denial reasons that are not in facts"]
 
 
 def _locate(session: dict[str, Any], records: Records) -> dict[str, Any] | None:

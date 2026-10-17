@@ -19,6 +19,9 @@ _RELATION_RE = re.compile(
     r"\b(?:my|her|his|their)\s+(son|daughter|spouse|mother|father|wife|husband|partner|parent)\b",
     re.I,
 )
+_POSSESSIVE_RELATION_RE = re.compile(
+    rf"{_NAME}'s\s+(son|daughter|spouse|mother|father|wife|husband|partner|parent)\b"
+)
 _POLICYHOLDER_RE = re.compile(r"\bi(?:'m| am) the policyholder\b", re.I)
 _REPRESENTATIVE_RE = re.compile(r"\b(authorized representative|on behalf of|calling for)\b", re.I)
 _DOB_LABELED = re.compile(
@@ -59,7 +62,8 @@ _OFF_TOPIC = re.compile(
 )
 _INSURANCE = re.compile(
     r"\b(claims?|polic(?:y|ies)|coverage|deductible|premium|appeal|denial|denied|benefit|member|"
-    r"insurance|documents?|reimburse|pathology|dob|ssn|e-?mail|summary|verification)\b",
+    r"insurance|documents?|reimburse\w*|pathology|dob|ssn|e-?mail|summary|verification|"
+    r"status|paid|payment|amount)\b",
     re.I,
 )
 _SMALL = re.compile(
@@ -147,10 +151,14 @@ def _read_role(text: str, parsed: Parsed) -> None:
         return
     behalf = _BEHALF_RE.search(text)
     relation = _RELATION_RE.search(text)
-    if behalf or relation or _REPRESENTATIVE_RE.search(text):
+    possessive = _POSSESSIVE_RELATION_RE.search(text)
+    if behalf or relation or possessive or _REPRESENTATIVE_RE.search(text):
         parsed.caller_role = "representative"
         if behalf:
             parsed.on_behalf_of_name = behalf.group(1)
+        if possessive:
+            parsed.on_behalf_of_name = parsed.on_behalf_of_name or possessive.group(1)
+            parsed.relationship = possessive.group(2).lower()
         if relation:
             parsed.relationship = relation.group(1).lower()
         named = _NAME_RE.search(text)

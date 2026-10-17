@@ -149,9 +149,51 @@ def list_claims_reply(claims: list[dict[str, Any]], remembered: str, ambiguous: 
     return lead + join(briefs) + ". Which one should I open?"
 
 
-def claim_reply(claim: dict[str, Any], message: str, remembered: str, switched: str | None) -> str:
-    """Answer from the claim record only. Wording follows the caller's question."""
-    lowered = message.lower()
+# Fields the responder may see for each workflow path. Money stays off denial and document paths.
+PATH_FIELDS = {
+    "denial_question": (
+        "case_id",
+        "case_type",
+        "created_at",
+        "status",
+        "summary",
+        "denial_reason",
+        "documents_needed",
+        "appeal_deadline",
+    ),
+    "status_inquiry": (
+        "case_id",
+        "case_type",
+        "created_at",
+        "status",
+        "summary",
+        "expected_reimbursement_amount",
+        "allowed_max_amount",
+        "net_pay",
+        "net_fee",
+    ),
+    "document_submission": ("case_id", "case_type", "status", "documents_needed", "appeal_deadline"),
+    "next_steps": ("case_id", "case_type", "status", "documents_needed", "appeal_deadline", "denial_reason"),
+    "appeal": ("case_id", "case_type", "status", "denial_reason", "documents_needed", "appeal_deadline"),
+    "general_claim_question": ("case_id", "case_type", "created_at", "status", "summary"),
+}
+
+
+def path_facts(claim: dict[str, Any], intent_path: str | None) -> dict[str, Any]:
+    """Slice the claim to the fields this workflow path is allowed to discuss."""
+    path = intent_path if intent_path in PATH_FIELDS else "general_claim_question"
+    return {key: claim.get(key) for key in PATH_FIELDS[path] if claim.get(key) not in (None, "", [])}
+
+
+def claim_reply(
+    claim: dict[str, Any],
+    message: str,
+    remembered: str,
+    switched: str | None,
+    intent_path: str | None = None,
+) -> str:
+    """Answer from the claim record. The workflow path chooses the facts, not the model."""
+    path = intent_path if intent_path in PATH_FIELDS else "general_claim_question"
     case_id = claim["case_id"]
     docs = [str(item) for item in claim.get("documents_needed") or []]
     parts: list[str] = []
@@ -159,14 +201,30 @@ def claim_reply(claim: dict[str, Any], message: str, remembered: str, switched: 
         parts.append(f"I'll switch from {switched} to {case_id}.")
     elif remembered:
         parts.append(f"You mentioned {remembered}. That matches {case_id}.")
-    documents_question = any(word in lowered for word in ("document", "send", "submit", "by when", "when do", "what do i need"))
-    timing_question = any(word in lowered for word in ("how long", "processing", "how soon"))
-    if documents_question and docs:
+    if path in {"document_submission", "next_steps"} and docs:
         parts.append(f"For {case_id}, please send {join(docs)} within a week.")
         if claim.get("appeal_deadline"):
             parts.append(f"The appeal deadline on file is {claim['appeal_deadline']}.")
-    elif claim.get("denial_reason") and (claim.get("status") == "denied" or "den" in lowered or not documents_question):
-        parts.append(f"{case_id} is {claim['status']} because {claim['denial_reason']}.")
+        if "how long" in message.lower() or "processing" in message.lower():
+            parts.append("Once those files are received, review usually restarts and takes less than a week.")
+    elif path == "appeal":
+        if claim.get("appeal_deadline"):
+            parts.append(f"The appeal deadline on file for {case_id} is {claim['appeal_deadline']}.")
+        if claim.get("denial_reason"):
+            parts.append(f"The denial on file is that {claim['denial_reason']}.")
+        if docs:
+            parts.append(f"An appeal should include {join(docs)}.")
+    elif path == "status_inquiry":
+        parts.append(
+            f"{case_id} is a {claim.get('case_type')} claim opened {claim.get('created_at')} "
+            f"and the status is {claim.get('status')}."
+        )
+        if claim.get("net_pay") is not None:
+            parts.append(f"The amount paid on file is {claim.get('net_pay')}.")
+        if claim.get("allowed_max_amount"):
+            parts.append(f"The allowed maximum on file is {claim.get('allowed_max_amount')}.")
+    elif path == "denial_question" and claim.get("denial_reason"):
+        parts.append(f"{case_id} is {claim.get('status')} because {claim['denial_reason']}.")
         if docs:
             parts.append(f"The file still needs {join(docs)}.")
         if claim.get("appeal_deadline"):
@@ -178,8 +236,6 @@ def claim_reply(claim: dict[str, Any], message: str, remembered: str, switched: 
         )
         if claim.get("summary"):
             parts.append(str(claim["summary"]) + ".")
-    if timing_question:
-        parts.append("Once the missing files are received, review usually restarts and takes less than a week.")
     parts.append("What else would you like to know about this claim?")
     return " ".join(parts)
 

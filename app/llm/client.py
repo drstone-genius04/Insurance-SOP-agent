@@ -12,6 +12,7 @@ from app.config import Settings
 from app.llm.base import LLMError, NullLLM
 
 _FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
+JSON_ONLY = "Return one JSON object and nothing else. No markdown fences."
 
 
 def build_client(settings: Settings) -> Any:
@@ -22,26 +23,28 @@ def build_client(settings: Settings) -> Any:
 
 
 class ChatClient:
-    """Small HTTP client. JSON mode is retried without the response_format flag."""
+    """HTTP client for Anthropic Messages and OpenAI-compatible chat completions."""
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._http = httpx.Client(timeout=httpx.Timeout(45.0, connect=10.0))
+        self._json_mode_ok = True
 
     def complete_json(self, system: str, user: str, temperature: float = 0.0) -> dict:
-        text = self._complete(system, user, temperature, json_mode=True)
+        text = self._complete(f"{system}\n\n{JSON_ONLY}", user, temperature, json_mode=True)
         return _parse_json(text)
 
     def complete_text(self, system: str, user: str, temperature: float = 0.4) -> str:
         return self._complete(system, user, temperature, json_mode=False).strip()
 
     def _complete(self, system: str, user: str, temperature: float, json_mode: bool) -> str:
-        if self._settings.llm_provider == "anthropic":
+        if self._settings.llm_transport == "anthropic":
             return self._anthropic(system, user, temperature)
         try:
-            return self._openai(system, user, temperature, json_mode)
+            return self._openai(system, user, temperature, json_mode and self._json_mode_ok)
         except LLMError as exc:
-            if json_mode and exc.status == 400:
+            if json_mode and exc.status == 400 and self._json_mode_ok:
+                self._json_mode_ok = False
                 return self._openai(system, user, temperature, False)
             raise
 
@@ -50,6 +53,7 @@ class ChatClient:
         payload: dict[str, Any] = {
             "model": self._settings.llm_model,
             "temperature": temperature,
+            "max_tokens": 900,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -57,11 +61,15 @@ class ChatClient:
         }
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
-        response = self._post(
-            url,
-            payload,
-            {"Authorization": f"Bearer {self._settings.llm_api_key}"},
-        )
+        headers = {
+            "Authorization": f"Bearer {self._settings.llm_api_key}",
+            "Content-Type": "application/json",
+        }
+        # OpenRouter recommends these; harmless for other hosts.
+        if "openrouter.ai" in self._settings.llm_base_url:
+            headers["HTTP-Referer"] = "https://github.com/drstone-genius04/Insurance-SOP-agent"
+            headers["X-Title"] = "Harborline Claims Desk"
+        response = self._post(url, payload, headers)
         try:
             return str(response["choices"][0]["message"]["content"] or "")
         except (KeyError, IndexError, TypeError) as exc:
@@ -69,7 +77,8 @@ class ChatClient:
 
     def _anthropic(self, system: str, user: str, temperature: float) -> str:
         base = self._settings.llm_base_url.rstrip("/")
-        url = base + "/v1/messages"
+        # Accept either https://api.anthropic.com or .../v1 as the configured base.
+        url = base + ("/messages" if base.endswith("/v1") else "/v1/messages")
         payload = {
             "model": self._settings.llm_model,
             "max_tokens": 900,
@@ -83,6 +92,7 @@ class ChatClient:
             {
                 "x-api-key": self._settings.llm_api_key,
                 "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
             },
         )
         try:
@@ -106,11 +116,21 @@ class ChatClient:
                 continue
             if response.status_code >= 400:
                 config = response.status_code in {401, 403, 404}
-                raise LLMError(
-                    f"Model host returned HTTP {response.status_code}.",
-                    status=response.status_code,
-                    config=config,
-                )
+                detail = ""
+                try:
+                    body = response.json()
+                    if isinstance(body, dict):
+                        err = body.get("error")
+                        if isinstance(err, dict):
+                            detail = str(err.get("message") or "")[:160]
+                        elif isinstance(err, str):
+                            detail = err[:160]
+                except Exception:
+                    detail = ""
+                message = f"Model host returned HTTP {response.status_code}."
+                if detail:
+                    message = f"{message} {detail}"
+                raise LLMError(message, status=response.status_code, config=config)
             try:
                 body = response.json()
             except json.JSONDecodeError as exc:

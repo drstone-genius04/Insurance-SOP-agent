@@ -53,8 +53,8 @@ async function boot(fresh) {
     const health = await fetch("/healthz").then((response) => response.json());
     const healthNode = document.querySelector("#health");
     healthNode.textContent = health.llm_configured
-      ? `Model ready · ${health.provider}`
-      : "Templated replies · add LLM_API_KEY for natural phrasing";
+      ? `Model ready · ${health.provider}/${health.model}`
+      : "Templated replies · add LLM_API_KEY or ANTHROPIC_API_KEY for natural phrasing";
     const scenario = document.querySelector("#scenario").value;
     const opened = await fetch("/api/session", {
       method: "POST",
@@ -196,7 +196,8 @@ function renderTicket(state, debug) {
   if (!state.verified) {
     file.textContent = "Sealed until identity is confirmed.";
   } else if (state.active_case_id) {
-    file.textContent = `Open file ${state.active_case_id}.`;
+    const path = state.intent_path ? ` · ${state.intent_path.replaceAll("_", " ")}` : "";
+    file.textContent = `Open file ${state.active_case_id}${path}.`;
   } else {
     file.textContent = "Verified. Waiting on which claim to open.";
   }

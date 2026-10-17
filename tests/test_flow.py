@@ -149,6 +149,53 @@ def test_skip_email(client: TestClient) -> None:
     assert skipped["state"]["outbox"] == []
 
 
+def _open(client: TestClient) -> str:
+    return client.post("/api/session", json={}).json()["session_id"]
+
+
+def test_denial_path_omits_dollar_amounts(client: TestClient) -> None:
+    session_id = _open(client)
+    say(client, session_id, DEMO)
+    reply = say(client, session_id, "Why was the January claim denied?")
+    state = reply["state"]
+    assert state["intent_path"] == "denial_question"
+    assert "pathology" in reply["reply"].lower()
+    assert "1450" not in reply["reply"]
+    assert reply["debug"]["decisions"][-1].startswith("Answered denial_question")
+
+
+def test_status_path_reads_payment_fields(client: TestClient) -> None:
+    session_id = _open(client)
+    say(client, session_id, DEMO)
+    reply = say(client, session_id, "What is the status, and how much was paid?")
+    assert reply["state"]["intent_path"] == "status_inquiry"
+    assert "1450.00" in reply["reply"]
+    assert "pathology" not in reply["reply"].lower()
+
+
+def test_appeal_path_states_deadline(client: TestClient) -> None:
+    session_id = _open(client)
+    say(client, session_id, DEMO)
+    reply = say(client, session_id, "I want to appeal that decision.")
+    assert reply["state"]["intent_path"] == "appeal"
+    assert "2026-03-18" in reply["reply"]
+
+
+def test_representative_cannot_verify_with_policyholder_pii(client: TestClient) -> None:
+    session_id = _open(client)
+    reply = say(
+        client,
+        session_id,
+        "This is David Chen, Margaret Chen's son. Her date of birth is 1985-03-15 and her SSN last four is 4472.",
+    )
+    state = reply["state"]
+    assert state["caller_role"] == "representative"
+    assert state["verified"] is False
+    assert state["factors_matched"] == 0
+    assert state["consent_status"] == "pending"
+    assert "4472" not in reply["reply"]
+
+
 def test_representative_consent_then_claim(client: TestClient) -> None:
     opened = client.post("/api/session", json={"consent_scenario": "default"}).json()
     session_id = opened["session_id"]
