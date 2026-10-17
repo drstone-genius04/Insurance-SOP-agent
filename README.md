@@ -8,6 +8,8 @@ A claims-support agent that follows a fixed procedure and still talks like a per
 
 Python decides the phase, the identity gate, which claim is open, and whether an email can be sent. The model only does two narrow jobs: read messy language into fields, and phrase the reply from facts the controller already chose. With no server key and no visitor key, the desk answers with a fixed “language model is not configured” notice and does not advance the call — same idea as the reference harness. Paste a key in the left panel (or set `LLM_API_KEY`) to run the procedure. If the model fails a safety check, the reply falls back to a phase template.
 
+The SOP is split like the reference harness: `app/sop/engine.py` (turn loop), `app/sop/phases/` (verify, resolve, process, email), `app/sop/directives.py` (shared directive builders), plus parsers and the output guard. Offline tests include a shared scenario suite (`app/eval/scenarios.py`); the same scenarios drive `scripts/live_demo.py` against a running server.
+
 ## Phases
 
 `VERIFY_ID` → `RESOLVE_INTENT` → `PROCESS_CASE` → `POST_PROCESS`
@@ -125,6 +127,24 @@ Or without activating:
 
 If the prompt shows both `(.venv)` and `(base)`, run `conda deactivate` first, or always call `.venv/bin/python -m pytest -q`. The suite uses a fake model and does not need a key or a network connection.
 
+### Live scenario runner
+
+With the server up and a key configured (server `.env` or visitor env vars):
+
+```bash
+.venv/bin/python scripts/live_demo.py
+.venv/bin/python scripts/live_demo.py --scenario demo_caller --verbose
+```
+
+For a BYOK deploy with no server key:
+
+```bash
+export CLAIMS_LLM_PROVIDER=groq
+export CLAIMS_LLM_MODEL=openai/gpt-oss-120b
+export CLAIMS_LLM_API_KEY=gsk_...
+.venv/bin/python scripts/live_demo.py --base-url https://your-service.onrender.com
+```
+
 ## Settings
 
 | Variable | Default | Purpose |
@@ -142,8 +162,20 @@ If the prompt shows both `(.venv)` and `(base)`, run `conda deactivate` first, o
 ## Layout
 
 ```
-app/            API, SOP controller, model client, claims-desk page
-fixtures/       Policyholders, claims, guidelines, representatives, consent
-tests/          Gate tests against a fake model
-docker/         Entrypoint that keeps the data directory writable
+app/
+  main.py              FastAPI + BYOK endpoints
+  sop/
+    engine.py          Turn loop (extract → decide → phrase → guard)
+    directives.py      Shared directive builders
+    phases/            VERIFY_ID, RESOLVE_INTENT, PROCESS_CASE, POST_PROCESS
+    parse.py           Deterministic field reading
+    guard.py           Output guard
+    phrases.py         Templated fallbacks
+  eval/                Shared offline + live scenario definitions
+  llm/                 Multi-provider client + NullLLM
+  static/              Claims-desk UI
+fixtures/              Policyholders, claims, guidelines, representatives, consent
+scripts/live_demo.py   Live PASS/FAIL runner (needs a running server + key)
+tests/                 Offline suite (FakeLLM / NullLLM, no network)
+docker/                Entrypoint that keeps the data directory writable
 ```

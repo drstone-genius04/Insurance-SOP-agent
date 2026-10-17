@@ -15,6 +15,11 @@ _NAME = r"([A-Z][a-z]+(?:[-'][A-Z][a-z]+)?(?:\s+[A-Z][a-z]+(?:[-'][A-Z][a-z]+)?)
 # The prefix is case-insensitive. The captured name stays case-sensitive so "I'm the policyholder" is not a name.
 _NAME_RE = re.compile(rf"(?i:my name is|this is|i am|i'm)\s+{_NAME}")
 _BEHALF_RE = re.compile(rf"(?i:\b(?:on behalf of|calling for))\s+{_NAME}")
+# "on behalf of my mother, Margaret Chen" — relation first, then the policyholder name.
+_BEHALF_RELATION_RE = re.compile(
+    rf"(?i:\b(?:on behalf of|calling for))\s+(?:my|her|his|their)\s+"
+    rf"(son|daughter|spouse|mother|father|wife|husband|partner|parent)\s*,?\s+{_NAME}"
+)
 _RELATION_RE = re.compile(
     r"\b(?:my|her|his|their)\s+(son|daughter|spouse|mother|father|wife|husband|partner|parent)\b",
     re.I,
@@ -174,17 +179,34 @@ def _read_role(text: str, parsed: Parsed) -> None:
     if _POLICYHOLDER_RE.search(text) and not _BEHALF_RE.search(text):
         parsed.caller_role = "policyholder"
         return
+    behalf_relation = _BEHALF_RELATION_RE.search(text)
     behalf = _BEHALF_RE.search(text)
     relation = _RELATION_RE.search(text)
     possessive = _POSSESSIVE_RELATION_RE.search(text)
-    if behalf or relation or possessive or _REPRESENTATIVE_RE.search(text):
+    if behalf_relation or behalf or relation or possessive or _REPRESENTATIVE_RE.search(text):
         parsed.caller_role = "representative"
-        if behalf:
-            parsed.on_behalf_of_name = behalf.group(1)
+        if behalf_relation:
+            parsed.relationship = behalf_relation.group(1).lower()
+            parsed.on_behalf_of_name = behalf_relation.group(2)
+        if behalf and not parsed.on_behalf_of_name:
+            # Avoid treating "my mother" as a person name when the relation form already matched.
+            candidate = behalf.group(1)
+            if candidate.lower() not in {
+                "my mother",
+                "my father",
+                "my son",
+                "my daughter",
+                "my spouse",
+                "my wife",
+                "my husband",
+                "my partner",
+                "my parent",
+            }:
+                parsed.on_behalf_of_name = candidate
         if possessive:
             parsed.on_behalf_of_name = parsed.on_behalf_of_name or possessive.group(1)
             parsed.relationship = possessive.group(2).lower()
-        if relation:
+        if relation and not parsed.relationship:
             parsed.relationship = relation.group(1).lower()
         named = _NAME_RE.search(text)
         if named and fold_differs(named.group(1), parsed.on_behalf_of_name):

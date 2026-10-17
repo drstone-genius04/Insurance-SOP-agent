@@ -17,23 +17,16 @@ from typing import Any
 from app.config import Settings
 from app.llm.base import LLMClient, LLMError
 from app.sop import phrases
-from app.sop.guard import contains_secret, needs_regen, review
+from app.sop.directives import FREEDOM, NEGATIVE, ask, ensure_offer, handoff, handoff_directive
+from app.sop.guard import needs_regen, review
 from app.sop.parse import Parsed, parse_message
+from app.sop.phases import run_phases
 from app.sop.prompts import EXTRACT_SYSTEM, REPLY_SYSTEM
 from app.sop.redact import mask_mapping, redact_text
 from app.store import SessionStore
-from app.tools.records import Records, claim_brief, mask_email
+from app.tools.records import Records
 
 FACTORS = phrases.FACTORS
-NEGATIVE = {"angry", "frustrated", "refusing"}
-FREEDOM = {
-    "VERIFY_ID": "strict",
-    "RESOLVE_INTENT": "flexible",
-    "PROCESS_CASE": "flexible",
-    "POST_PROCESS": "consent",
-    "CLOSED": "minimal",
-    "HUMAN_HANDOFF": "terminal",
-}
 _ALLOWED_SCOPE = {"in_scope_claim", "in_scope_general", "out_of_scope", "small_talk"}
 _ALLOWED_EMOTION = {"neutral", "frustrated", "angry", "anxious", "confused", "refusing"}
 _ALLOWED_PATH = {
@@ -124,7 +117,7 @@ class Harness:
             if exc.config:
                 reply = phrases.config_notice(exc.status or 0)
                 return _result(session, reply, [f"model config HTTP {exc.status}"], None, self.settings), None
-            reply = phrases.transport_notice(_ask(session))
+            reply = phrases.transport_notice(ask(session))
             return _result(session, reply, ["extractor unavailable"], None, self.settings), None
 
         parsed = parse_message(text, draft["phase"])
@@ -135,18 +128,18 @@ class Harness:
         _remember(draft, parsed)
 
         if parsed.wants_human:
-            _handoff(draft, "caller asked for a person")
-            directive = _handoff_directive(draft)
+            handoff(draft, "caller asked for a person")
+            directive = handoff_directive(draft)
             decisions = ["Caller asked for a person."]
         else:
             off_topic = _apply_scope(draft, parsed, self.settings)
             if draft["phase"] == "HUMAN_HANDOFF":
-                directive = _handoff_directive(draft)
+                directive = handoff_directive(draft)
                 decisions = ["Off-topic streak reached the transfer limit."]
             else:
                 before_phase = draft["phase"]
                 before_matched = sum(draft["matched"].values())
-                directive, decisions = _run_phases(
+                directive, decisions = run_phases(
                     draft, parsed, text, off_topic, self.records, self.settings
                 )
                 _apply_emotion(
@@ -158,10 +151,10 @@ class Harness:
                     self.settings,
                 )
                 if draft["phase"] == "HUMAN_HANDOFF" and before_phase != "HUMAN_HANDOFF":
-                    directive = _handoff_directive(draft)
+                    directive = handoff_directive(draft)
                     decisions.append("Frustration streak reached the transfer limit.")
                 elif draft["frustration_streak"] >= 2 and draft["phase"] == "VERIFY_ID":
-                    directive["fallback"] = _ensure_offer(directive["fallback"])
+                    directive["fallback"] = ensure_offer(directive["fallback"])
                     decisions.append("Offered a person after repeated frustration.")
         _log_topic(draft)
         reply, flags = self._phrase(draft, directive, redacted, llm or self.llm, use_model)
@@ -404,7 +397,7 @@ def _apply_scope(session: dict[str, Any], parsed: Parsed, settings: Settings) ->
     if parsed.scope == "out_of_scope":
         session["off_topic_streak"] += 1
         if session["off_topic_streak"] >= settings.max_off_topic:
-            _handoff(session, "repeated questions outside claims support")
+            handoff(session, "repeated questions outside claims support")
         return True
     if parsed.scope == "in_scope_claim":
         session["off_topic_streak"] = 0
@@ -430,410 +423,7 @@ def _apply_emotion(
     elif parsed.emotion in NEGATIVE:
         session["frustration_streak"] += 1
     if session["frustration_streak"] >= settings.max_frustration_turns and session["phase"] != "HUMAN_HANDOFF":
-        _handoff(session, "frustration without progress")
-
-
-def _run_phases(
-    session: dict[str, Any],
-    parsed: Parsed,
-    message: str,
-    off_topic: bool,
-    records: Records,
-    settings: Settings,
-) -> tuple[dict[str, Any], list[str]]:
-    if off_topic and session["phase"] != "VERIFY_ID":
-        ask = _ask(session)
-        fallback = phrases.scope_reply(ask, session["off_topic_streak"] >= 2, parsed.emotion)
-        directive = _directive(session, "Decline the off-topic question and return to the step.", {}, ask, fallback, records, parsed)
-        return directive, ["Declined an off-topic question."]
-    # CLOSED / POST_PROCESS own their short replies; do not bounce "ok"/"thanks" back into the case ask.
-    if parsed.scope == "small_talk" and session["phase"] not in {"VERIFY_ID", "HUMAN_HANDOFF", "POST_PROCESS", "CLOSED"}:
-        ask = _ask(session)
-        fallback = phrases.small_talk_reply(ask)
-        directive = _directive(session, "Answer briefly and return to the step.", {}, ask, fallback, records, parsed)
-        return directive, ["Small talk."]
-    decisions: list[str] = []
-    directive: dict[str, Any] | None = None
-    for _ in range(5):
-        phase = session["phase"]
-        if phase == "VERIFY_ID":
-            directive, cont, decision = _verify(session, parsed, message, off_topic, records, settings)
-        elif phase == "RESOLVE_INTENT":
-            directive, cont, decision = _resolve(session, records)
-        elif phase == "PROCESS_CASE":
-            directive, cont, decision = _process(session, parsed, message, records)
-        elif phase == "POST_PROCESS":
-            directive, cont, decision = _post(session, parsed, records)
-        elif phase == "CLOSED":
-            directive, cont, decision = _closed(session, parsed, message)
-        else:
-            directive, cont, decision = _handoff_directive(session), False, "Transferred."
-        decisions.append(decision)
-        if not cont:
-            break
-    assert directive is not None
-    return directive, decisions
-
-
-def _verify(
-    session: dict[str, Any],
-    parsed: Parsed,
-    message: str,
-    off_topic: bool,
-    records: Records,
-    settings: Settings,
-) -> tuple[dict[str, Any], bool, str]:
-    if session["caller_role"] == "representative":
-        return _representative(session, parsed, off_topic, records, settings)
-    if off_topic or parsed.scope == "small_talk":
-        ask = _ask(session)
-        fallback = phrases.scope_reply(ask, session["off_topic_streak"] >= 2, parsed.emotion) if off_topic else phrases.small_talk_reply(ask)
-        return _directive(session, "Stay on identity verification.", {}, ask, fallback, records, parsed), False, "Off-topic during verification." if off_topic else "Small talk during verification."
-
-    record = _locate(session, records)
-    mismatch = False
-    not_found = False
-    if record is None:
-        if any(session["slots"].values()):
-            not_found = True
-            mismatch = True
-    else:
-        for factor in FACTORS:
-            value = session["slots"].get(factor)
-            if not value:
-                continue
-            if records.factor_matches(record, factor, value):
-                session["matched"][factor] = True
-            else:
-                session["matched"][factor] = False
-                session["slots"][factor] = None
-                mismatch = True
-    if mismatch:
-        session["verify_attempts"] += 1
-        if session["verify_attempts"] > settings.max_verify_attempts:
-            _handoff(session, f"identity not verified after {session['verify_attempts']} attempts")
-            return _handoff_directive(session), False, "Identity attempts exhausted."
-    if sum(session["matched"].values()) >= phrases.NEEDED and record is not None:
-        _mark_verified(session, record)
-        return _empty_directive(), True, f"Verified {sum(session['matched'].values())} factors."
-
-    offer = session["verify_attempts"] >= settings.max_verify_attempts and mismatch
-    remembered = phrases.hint_phrase(session["memory"]["case_hints"])
-    fallback = phrases.verify_reply(
-        located=record is not None,
-        matched=session["matched"],
-        mismatch=mismatch and not not_found,
-        not_found=not_found,
-        offer_human=offer,
-        emotion=parsed.emotion,
-        remembered=remembered,
-        policyholder=record["name"] if record and session["matched"].get("name") else None,
-    )
-    facts = {
-        "verified": False,
-        "account_located": record is not None,
-        "factors_matched": sum(session["matched"].values()),
-        "factors_still_needed": max(0, phrases.NEEDED - sum(session["matched"].values())),
-        "acceptable_factors": [phrases.FACTOR_LABELS[name] for name in FACTORS if not session["matched"].get(name)],
-        "mismatch_this_turn": mismatch,
-        "offer_human": offer,
-        "caller_context": remembered,
-    }
-    ask = "What detail can you share so I can verify the policy?"
-    decision = "Identity mismatch." if mismatch else "Waiting for more identity details."
-    return _directive(session, "Verify identity before opening any claim.", facts, ask, fallback, records, parsed), False, decision
-
-
-def _representative(
-    session: dict[str, Any],
-    parsed: Parsed,
-    off_topic: bool,
-    records: Records,
-    settings: Settings,
-) -> tuple[dict[str, Any], bool, str]:
-    row = records.lookup_representative(session.get("representative_name"), session.get("on_behalf_of"))
-    remembered = phrases.hint_phrase(session["memory"]["case_hints"])
-    if row is None:
-        if session.get("representative_name") or session.get("on_behalf_of"):
-            session["verify_attempts"] += 1
-            if session["verify_attempts"] > settings.max_verify_attempts:
-                _handoff(session, f"identity not verified after {session['verify_attempts']} attempts")
-                return _handoff_directive(session), False, "Representative not found. Attempts exhausted."
-        offer = session["verify_attempts"] >= settings.max_verify_attempts
-        fallback = phrases.representative_reply(
-            found=False,
-            status="pending",
-            rep_name=session.get("representative_name"),
-            buyer_name=session.get("on_behalf_of"),
-            offer_human=offer,
-            emotion=parsed.emotion,
-            remembered=remembered,
-        )
-        return _directive(session, "Find an authorization before opening a claim.", {"verified": False}, "Who are you calling for?", fallback, records, parsed), False, "Representative not on file."
-
-    session["consent_checks"] += 1
-    status = records.consent_status(session["consent_scenario"], session["consent_checks"])
-    session["consent_status"] = status
-    buyer = records.by_id(row.get("buyer_party_id"))
-    buyer_name = buyer["name"] if buyer else row.get("buyer_name")
-    if status == "timed_out":
-        _handoff(session, "policyholder consent not received")
-        return _handoff_directive(session), False, "Consent timed out."
-    if status == "approved" and buyer:
-        _mark_verified(session, buyer)
-        session["turn_flags"]["just_approved"] = True
-        session["relationship"] = session.get("relationship") or row.get("relationship")
-        return _empty_directive(), True, "Policyholder approved consent."
-    offer = off_topic and session["off_topic_streak"] >= 2
-    fallback = phrases.representative_reply(
-        found=True,
-        status="pending",
-        rep_name=session.get("representative_name"),
-        buyer_name=buyer_name,
-        offer_human=offer,
-        emotion=parsed.emotion,
-        remembered=remembered,
-    )
-    if off_topic:
-        fallback = phrases.scope_reply("I still need the policyholder's approval before I can open the claim.", offer, parsed.emotion)
-    facts = {"verified": False, "consent_status": "pending", "caller_context": remembered}
-    return _directive(session, "Wait for policyholder consent. Do not verify with their ID.", facts, "I can stay on the line while they respond.", fallback, records, parsed), False, "Consent pending."
-
-
-def _resolve(session: dict[str, Any], records: Records) -> tuple[dict[str, Any], bool, str]:
-    hints = session["memory"]["case_hints"]
-    remembered = phrases.hint_phrase(hints)
-    hinted = any(hints.values())
-    matched = records.filter_claims(session["party_id"], hints) if hinted else records.claims_for(session["party_id"])
-    if len(matched) == 1:
-        session["active_case_id"] = matched[0]["case_id"]
-        session["phase"] = "PROCESS_CASE"
-        return _empty_directive(), True, f"Selected {matched[0]['case_id']}."
-    pool = matched if matched else records.claims_for(session["party_id"])
-    briefs = [claim_brief(row) for row in pool]
-    fallback = phrases.list_claims_reply(briefs, remembered, ambiguous=bool(matched) and hinted)
-    facts = {"verified": True, "claims": briefs, "caller_context": remembered}
-    forbidden = ["denial reasons", "document names", "dollar amounts"]
-    directive = _directive(session, "Choose exactly one claim.", facts, "Which claim should I open?", fallback, records, None)
-    directive["forbidden"] = forbidden
-    return directive, False, "Need the caller to pick a claim."
-
-
-def _process(
-    session: dict[str, Any],
-    parsed: Parsed,
-    message: str,
-    records: Records,
-) -> tuple[dict[str, Any], bool, str]:
-    if parsed.conversation_done:
-        session["phase"] = "POST_PROCESS"
-        return _empty_directive(), True, "Caller is wrapping up."
-    hints = session["memory"]["case_hints"]
-    if any(hints.values()):
-        matched = records.filter_claims(session["party_id"], hints)
-        if len(matched) == 1 and matched[0]["case_id"] != session["active_case_id"]:
-            session["turn_flags"]["switched_from"] = session["active_case_id"]
-            session["active_case_id"] = matched[0]["case_id"]
-    claim = records.claim(session["active_case_id"])
-    if claim is None:
-        session["phase"] = "RESOLVE_INTENT"
-        return _empty_directive(), True, "No active claim."
-    remembered = phrases.hint_phrase(hints) if session["memory"]["saved_before_verification"] else ""
-    switched = session["turn_flags"].get("switched_from")
-    if parsed.email_preference and not parsed.case_type and not parsed.intent_path:
-        fallback = (
-            "I've noted that you'd like a summary by email. I'll ask before I send anything. "
-            "What else would you like to know about this claim?"
-        )
-    else:
-        fallback = phrases.claim_reply(claim, message, remembered, switched, session.get("intent_path"))
-    if session["turn_flags"].get("just_approved"):
-        fallback = f"{session['policyholder_name']} approved the consent request. " + fallback
-    elif session["turn_flags"].get("just_verified"):
-        name = session["policyholder_name"]
-        fallback = f"You're verified, {name}. " + fallback
-    if session["memory"]["email_preference"] == "yes" and "email" in message.lower():
-        fallback += " I've noted that you'd like this by email, and I'll ask before I send anything."
-    path = session.get("intent_path") or "general_claim_question"
-    allowed_claim = phrases.path_facts(claim, path)
-    facts = {
-        "verified": True,
-        "workflow_path": path,
-        "claim": allowed_claim,
-        "guidance": records.guidance_lines(claim, path, message) if path in {"document_submission", "next_steps", "appeal", "denial_question"} else [],
-        "caller_context": remembered,
-    }
-    if session.get("caller_role") == "representative":
-        facts["consent_status"] = session.get("consent_status")
-        facts["speaking_with"] = session.get("representative_name")
-    if path == "status_inquiry":
-        facts["field_descriptions"] = records.schema.get("field_descriptions") or {}
-    goal = f"Answer only on the {path} path, using the claim fields in facts and nothing else."
-    if session.get("consent_status") == "approved":
-        goal += " Consent is already approved. Do not ask for it again."
-    directive = _directive(
-        session,
-        goal,
-        facts,
-        "What else would you like to know about this claim?",
-        fallback,
-        records,
-        parsed,
-    )
-    directive["forbidden"] = _path_forbidden(path)
-    if session.get("consent_status") == "approved":
-        directive["forbidden"] = [*directive["forbidden"], "asking for consent or identity again"]
-    return directive, False, f"Answered {path} from {claim['case_id']}."
-
-
-def _post(session: dict[str, Any], parsed: Parsed, records: Records) -> tuple[dict[str, Any], bool, str]:
-    record = records.by_id(session["party_id"]) or {}
-    on_file = record.get("email")
-    masked = mask_email(on_file)
-    claim = records.claim(session["active_case_id"])
-    if not on_file:
-        session["phase"] = "CLOSED"
-        fallback = "There is no email on file, so I will close the call without sending a summary."
-        return _directive(session, "Close without an email.", {"verified": True, "sent": False}, "", fallback, records, parsed), False, "No email on file."
-    supplied = parsed.email
-    if supplied and supplied != str(on_file).lower():
-        fallback = phrases.email_other_address(masked)
-        return _directive(session, "Decline any address that is not on file.", {"masked_email": masked, "sent": False}, "Should I send it to the address on file, or skip the email?", fallback, records, parsed), False, "Declined a different email address."
-    consent = parsed.email_consent
-    if consent is None:
-        fallback = phrases.email_offer(masked, session["memory"]["email_preference"], claim, parsed.emotion)
-        facts = {
-            "masked_email": masked,
-            "email_preference": session["memory"]["email_preference"],
-            "active_case_id": session.get("active_case_id"),
-            "sent": False,
-        }
-        return _directive(session, "Ask before sending the summary. Do not send yet.", facts, "Should I send the summary, or skip the email?", fallback, records, parsed), False, "Offered the email summary."
-    if consent == "yes":
-        subject, body = phrases.summary_email(session, claim)
-        if contains_secret(body, session["slots"]):
-            subject, body = "Summary of your claims call", "What we discussed:\n- A claim on your policy.\n\nClaim status:\n- See the call for the outcome on file.\n\nNext steps:\n- Call back if you need the next step repeated.\n"
-        session["outbox"].append({"to_masked": masked, "subject": subject, "body": body})
-        session["phase"] = "CLOSED"
-        fallback = phrases.email_sent(masked)
-        return _directive(session, "Confirm the summary was sent.", {"masked_email": masked, "sent": True}, "", fallback, records, parsed), False, "Email summary sent."
-    if consent == "no":
-        session["phase"] = "CLOSED"
-        fallback = phrases.email_skipped()
-        return _directive(session, "Close without sending.", {"sent": False}, "", fallback, records, parsed), False, "Caller declined the email."
-    session["email_unclear"] += 1
-    if session["email_unclear"] >= 2:
-        session["phase"] = "CLOSED"
-        fallback = phrases.email_unclear_close()
-        return _directive(session, "Close because email consent stayed unclear.", {"sent": False}, "", fallback, records, parsed), False, "Email consent unclear twice."
-    fallback = phrases.email_offer(masked, session["memory"]["email_preference"], claim, parsed.emotion)
-    facts = {"masked_email": masked, "email_preference": session["memory"]["email_preference"], "active_case_id": session.get("active_case_id"), "sent": False}
-    return _directive(session, "Ask again before sending. Do not send yet.", facts, "Should I send the summary, or skip the email?", fallback, records, parsed), False, "Email consent unclear."
-
-
-def _closed(session: dict[str, Any], parsed: Parsed, message: str) -> tuple[dict[str, Any], bool, str]:
-    asked_something = bool(parsed.intent_path or parsed.case_type or parsed.case_id or "?" in message)
-    reopen = parsed.scope == "in_scope_claim" and not parsed.conversation_done and asked_something
-    if reopen and parsed.scope != "small_talk":
-        session["phase"] = "PROCESS_CASE" if session.get("active_case_id") else "RESOLVE_INTENT"
-        return _empty_directive(), True, "Reopened the file."
-    fallback = phrases.closed_reply()
-    facts = {"verified": session["verified"], "sent": bool(session["outbox"])}
-    return _directive(session, "Close warmly.", facts, "", fallback, None, parsed), False, "Call already closed."
-
-
-def _path_forbidden(path: str) -> list[str]:
-    if path == "status_inquiry":
-        return ["documents that are not on this claim", "a denial reason that is not in facts"]
-    if path in {"denial_question", "appeal", "document_submission", "next_steps"}:
-        return ["dollar amounts", "reimbursement figures", "claim ids other than the active one"]
-    return ["dollar amounts", "denial reasons that are not in facts"]
-
-
-def _locate(session: dict[str, Any], records: Records) -> dict[str, Any] | None:
-    if session.get("party_id"):
-        return records.by_id(session["party_id"])
-    found = records.locate(session["slots"])
-    if found:
-        session["party_id"] = found["party_id"]
-        session["account_located"] = True
-    return found
-
-
-def _mark_verified(session: dict[str, Any], record: dict[str, Any]) -> None:
-    session["verified"] = True
-    session["party_id"] = record["party_id"]
-    session["account_located"] = True
-    session["policyholder_name"] = record["name"]
-    session["phase"] = "RESOLVE_INTENT"
-    session["turn_flags"]["just_verified"] = True
-
-
-def _handoff(session: dict[str, Any], reason: str) -> None:
-    session["phase"] = "HUMAN_HANDOFF"
-    session["handoff_reason"] = reason
-    verified = "yes" if session["verified"] else "no"
-    who = session["caller_role"]
-    if who == "representative":
-        who = f"representative {session.get('representative_name') or ''} ({session.get('relationship') or 'unspecified'}) for {session.get('on_behalf_of') or 'unknown'}"
-    session["handoff_note"] = f"Reason: {reason}. Identity verified: {verified}. Caller: {who}."
-
-
-def _handoff_directive(session: dict[str, Any]) -> dict[str, Any]:
-    reason = session.get("handoff_reason") or "transfer"
-    fallback = phrases.handoff_reply(reason, bool(session["verified"]))
-    return _directive(session, "Transfer and stop asking questions.", {"reason": reason, "verified": session["verified"]}, "", fallback, None, None)
-
-
-def _empty_directive() -> dict[str, Any]:
-    return {
-        "phase": "",
-        "freedom": "",
-        "goal": "",
-        "facts": {},
-        "must_ask": "",
-        "instructions": [],
-        "forbidden": [],
-        "tone": "",
-        "empathy": "",
-        "fallback": "",
-        "leak_terms": [],
-        "allowed_text": "",
-    }
-
-
-def _directive(
-    session: dict[str, Any],
-    goal: str,
-    facts: dict[str, Any],
-    must_ask: str,
-    fallback: str,
-    records: Records | None,
-    parsed: Parsed | None,
-) -> dict[str, Any]:
-    emotion = parsed.emotion if parsed else session.get("last_emotion") or "neutral"
-    verified = bool(session["verified"])
-    allowed = json.dumps(facts) if verified else ""
-    forbidden = []
-    if not verified:
-        forbidden = ["claim numbers", "denial reasons", "documents", "dollar amounts", "saying the caller is verified"]
-    return {
-        "phase": session["phase"],
-        "freedom": FREEDOM.get(session["phase"], "strict"),
-        "goal": goal,
-        "facts": facts,
-        "must_ask": must_ask,
-        "instructions": [
-            "Answer only from facts.",
-            "Acknowledge emotion before the ask." if emotion in NEGATIVE or emotion in {"anxious", "confused"} else "Be warm and brief.",
-        ],
-        "forbidden": forbidden,
-        "tone": emotion,
-        "empathy": phrases.empathy_line(emotion) if emotion != "neutral" else "",
-        "fallback": fallback,
-        "leak_terms": list(records.leak_terms) if records and not verified else [],
-        "allowed_text": allowed,
-    }
+        handoff(session, "frustration without progress")
 
 
 def _log_topic(session: dict[str, Any]) -> None:
@@ -849,29 +439,6 @@ def _log_topic(session: dict[str, Any]) -> None:
         note = f"Opened {case_id}."
         if note not in session["memory"]["notes"]:
             session["memory"]["notes"].append(note)
-
-
-def _ask(session: dict[str, Any]) -> str:
-    phase = session["phase"]
-    if phase == "VERIFY_ID" and session["caller_role"] == "representative":
-        return "I still need the policyholder's approval before I can open the claim."
-    if phase == "VERIFY_ID" and not session["account_located"]:
-        return "What full name and policy number should I use, or which phone number or email is on the policy?"
-    if phase == "VERIFY_ID":
-        return "Which remaining detail can you share?"
-    if phase == "RESOLVE_INTENT":
-        return "Which claim should I open?"
-    if phase == "PROCESS_CASE":
-        return "What else would you like to know about this claim?"
-    if phase == "POST_PROCESS":
-        return "Should I send the summary, or skip the email?"
-    return "How else can I help with the claim?"
-
-
-def _ensure_offer(text: str) -> str:
-    if "transfer" in text.lower() or "specialist" in text.lower():
-        return text
-    return text.rstrip() + " If you'd rather talk to a person, I can transfer you to a claims specialist."
 
 
 def _history(transcript: list[dict[str, str]], limit: int) -> str:
