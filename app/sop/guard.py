@@ -46,7 +46,10 @@ _COUNT = re.compile(
 _WORD_COUNTS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
 _SENT_CLAIM = re.compile(
     r"\b(I(?:'ve| have)? (?:already |just )?sent|(?:has|have|was|been) (?:already )?sent|"
-    r"on its way|in your inbox|sending (?:it|that|the summary) now|I'll send (?:it|that|the summary) (?:right )?now)\b",
+    r"on its way|in your inbox|"
+    r"sending (?:it|that|the summary) (?:right )?(?:now|away)|"
+    r"I(?:'ll| will) send (?:it|that|the summary) (?:right )?(?:now|away)|"
+    r"I(?:'ll| will) send .{0,48}(?:right away|immediately|shortly))\b",
     re.I,
 )
 _STALE_GATE = re.compile(

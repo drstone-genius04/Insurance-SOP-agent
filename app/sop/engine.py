@@ -440,7 +440,8 @@ def _run_phases(
         fallback = phrases.scope_reply(ask, session["off_topic_streak"] >= 2, parsed.emotion)
         directive = _directive(session, "Decline the off-topic question and return to the step.", {}, ask, fallback, records, parsed)
         return directive, ["Declined an off-topic question."]
-    if parsed.scope == "small_talk" and session["phase"] not in {"VERIFY_ID", "HUMAN_HANDOFF"}:
+    # CLOSED / POST_PROCESS own their short replies; do not bounce "ok"/"thanks" back into the case ask.
+    if parsed.scope == "small_talk" and session["phase"] not in {"VERIFY_ID", "HUMAN_HANDOFF", "POST_PROCESS", "CLOSED"}:
         ask = _ask(session)
         fallback = phrases.small_talk_reply(ask)
         directive = _directive(session, "Answer briefly and return to the step.", {}, ask, fallback, records, parsed)

@@ -293,6 +293,67 @@ def test_false_sent_claim_is_replaced(tmp_path) -> None:
     assert "m*****@email.com" in offer["reply"]
 
 
+def test_false_sent_catches_right_away(tmp_path) -> None:
+    settings = Settings(data_dir=tmp_path, fixtures_dir=ROOT / "fixtures", llm_api_key="sk-test", trace_enabled=True)
+    client = TestClient(create_app(settings, ScriptLLM("Sure thing—I'll send the summary right away.")))
+    session_id = client.post("/api/session", json={}).json()["session_id"]
+    say(client, session_id, DEMO)
+    offer = say(client, session_id, "That's all, thanks.")
+    assert offer["state"]["outbox"] == []
+    assert "false_sent" in offer["debug"]["guard"]
+    assert "right away" not in offer["reply"].lower()
+
+
+def test_send_summary_and_yup_count_as_email_yes(client: TestClient) -> None:
+    session_id = _open(client)
+    say(client, session_id, DEMO)
+    say(client, session_id, "That's all, thanks.")
+    sent = say(client, session_id, "send summary")
+    assert sent["state"]["phase"] == "CLOSED"
+    assert len(sent["state"]["outbox"]) == 1
+
+
+def test_yup_send_typo_still_sends(client: TestClient) -> None:
+    session_id = _open(client)
+    say(client, session_id, DEMO)
+    say(client, session_id, "That's all, thanks.")
+    sent = say(client, session_id, "yup send sumamry")
+    assert sent["state"]["phase"] == "CLOSED"
+    assert len(sent["state"]["outbox"]) == 1
+
+
+def test_done_with_email_ask_wraps_up(client: TestClient) -> None:
+    session_id = _open(client)
+    say(client, session_id, DEMO)
+    say(client, session_id, "Can you send me email regarding the same")
+    done = say(
+        client,
+        session_id,
+        "no I am telling I am done with this conversation can you send me the email of our conversation",
+    )
+    assert done["state"]["phase"] in {"POST_PROCESS", "CLOSED"}
+    assert "What else would you like to know about this claim?" not in done["reply"]
+    if done["state"]["phase"] == "CLOSED":
+        assert len(done["state"]["outbox"]) == 1
+    else:
+        assert done["state"]["outbox"] == []
+        sent = say(client, session_id, "send summary")
+        assert len(sent["state"]["outbox"]) == 1
+
+
+def test_nothing_else_then_send_summary(client: TestClient) -> None:
+    session_id = _open(client)
+    say(client, session_id, DEMO)
+    offer = say(client, session_id, "nothing else")
+    assert offer["state"]["phase"] == "POST_PROCESS"
+    sent = say(client, session_id, "send summary")
+    assert sent["state"]["phase"] == "CLOSED"
+    assert len(sent["state"]["outbox"]) == 1
+    after = say(client, session_id, "ok")
+    assert after["state"]["phase"] == "CLOSED"
+    assert "how else can i help" not in after["reply"].lower()
+
+
 def test_typed_different_address_is_still_declined(client: TestClient) -> None:
     session_id = _open(client)
     say(client, session_id, DEMO)

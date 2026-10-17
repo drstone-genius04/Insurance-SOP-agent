@@ -50,10 +50,30 @@ _HUMAN = re.compile(
 )
 _DONE = re.compile(
     r"\b(that(?:'s| is) all|that(?:'s| is) everything|nothing else|we(?:'re| are) done|"
-    r"i(?:'m| am) done|goodbye|no more questions)\b",
+    r"i(?:'m| am) done(?:\s+with\s+(?:this\s+)?(?:conversation|call|chat))?|"
+    r"goodbye|no more questions)\b",
     re.I,
 )
 _QUESTION = re.compile(r"\b(what|why|how|when|where|which|can you|could you)\b|\?", re.I)
+# "I'm done — can you email the summary?" is still a wrap-up; strip that ask before the question check.
+_WRAP_EMAIL_ASK = re.compile(
+    r"\b(?:can you|could you|please)?\s*"
+    r"(?:send|email)\s+(?:me\s+)?(?:the\s+|an\s+|a\s+|our\s+)?(?:email|summary|receipt|transcript|conversation)\b"
+    r"(?:\s+(?:of|regarding|about)\s+(?:the\s+|our\s+)?(?:same|conversation|call|summary))?",
+    re.I,
+)
+_EMAIL_WANT = re.compile(
+    r"\b(email me|send (?:me )?(?:an |the |a )?email|send (?:me )?(?:an |the |a )?summary|"
+    r"emailed summary|email (?:of |regarding |about )?(?:our |the )?(?:conversation|call|summary|same))\b",
+    re.I,
+)
+_EMAIL_YES = re.compile(
+    r"\b(yes|yup|yeah|yep|please send|send it|go ahead|sure|do (?:it|that)|"
+    r"send (?:the |a |our |me (?:the |a |an )?)?summary|"
+    r"send (?:me )?(?:the |an |a )?email)\b",
+    re.I,
+)
+_EMAIL_NO = re.compile(r"\b(no|skip|don'?t|do not)\b", re.I)
 
 _OFF_TOPIC = re.compile(
     r"\b(what is rl|reinforcement learning|weather|recipe|capital of|who won|write (?:me )?code|"
@@ -302,23 +322,25 @@ def _read_scope(text: str, parsed: Parsed) -> None:
 def _read_controls(text: str, parsed: Parsed, phase: str) -> None:
     parsed.wants_human = bool(_HUMAN.search(text))
     parsed.conversation_done = _is_wrap_up(text)
-    yes = bool(re.search(r"\b(yes|please send|send it|go ahead|sure)\b", text, re.I))
-    no = bool(re.search(r"\b(no|skip|don'?t|do not)\b", text, re.I))
+    yes = bool(_EMAIL_YES.search(text)) or bool(re.search(r"\bsend\b", text, re.I))
+    no = bool(_EMAIL_NO.search(text))
     if phase == "POST_PROCESS":
-        if yes and not no:
-            parsed.email_consent = "yes"
-        elif no and not yes:
+        # Prefer an explicit skip over a bare "send" buried in a decline.
+        if no and not yes:
             parsed.email_consent = "no"
+        elif yes and not no:
+            parsed.email_consent = "yes"
+        elif no and re.search(r"\b(skip|don'?t|do not)\b", text, re.I):
+            parsed.email_consent = "no"
+        elif yes and not re.search(r"\b(skip|don'?t|do not)\b", text, re.I):
+            # "no I'm done, send the summary" — the no is not a decline of email.
+            parsed.email_consent = "yes"
         else:
             parsed.email_consent = "unclear"
         return
     if re.search(r"\b(no email|don'?t email|do not email|skip the email)\b", text, re.I):
         parsed.email_preference = "no"
-    elif re.search(
-        r"\b(email me|send (?:me )?(?:an )?email|send (?:me )?a summary|emailed summary)\b",
-        text,
-        re.I,
-    ):
+    elif _EMAIL_WANT.search(text):
         parsed.email_preference = "yes"
         if parsed.conversation_done:
             parsed.email_consent = "yes"
@@ -333,4 +355,5 @@ def _is_wrap_up(text: str) -> bool:
     if not _DONE.search(stripped):
         return False
     remainder = _DONE.sub(" ", stripped)
+    remainder = _WRAP_EMAIL_ASK.sub(" ", remainder)
     return not bool(_QUESTION.search(remainder))
