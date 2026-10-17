@@ -1,5 +1,9 @@
 # Claims Desk
 
+**Live demo:** [https://insurance-sop-agent-zmss.onrender.com/](https://insurance-sop-agent-zmss.onrender.com/)
+
+Paste your own provider API key on the left panel, then try the sample calls. The free Render instance may take a minute to wake up after idle time.
+
 A claims-support agent that follows a fixed procedure and still talks like a person.
 
 Python decides the phase, the identity gate, which claim is open, and whether an email can be sent. The model only does two narrow jobs: read messy language into fields, and phrase the reply from facts the controller already chose. With no API key, those replies fall back to templates, so the procedure still runs.
@@ -70,7 +74,9 @@ APP_PORT=8010 docker compose up --build
 4. You do not need to put an API key on Render. Each visitor picks a provider and model on the page and pastes their own key. The key stays in that browser tab and is sent only with their messages. It is not saved in the session database.
 5. Optional server key (local Docker, or a private demo): `LLM_PROVIDER`, `ANTHROPIC_API_KEY` or `LLM_API_KEY`, and `LLM_MODEL`. A visitor key overrides it for that turn.
 6. Deploy. The container listens on `$PORT` (Render sets this; locally it defaults to `8000`).
-7. Open `https://YOUR-SERVICE.onrender.com`, paste a key, and check `/healthz`.
+7. Open the service URL, paste a key, and check `/healthz`.
+
+This project’s public demo: [https://insurance-sop-agent-zmss.onrender.com/](https://insurance-sop-agent-zmss.onrender.com/)
 
 Sessions use SQLite under `DATA_DIR`. On free Render that disk is ephemeral unless you attach a persistent Disk at `/srv/data`.
 
